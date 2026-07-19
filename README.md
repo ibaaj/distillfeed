@@ -1,5 +1,5 @@
 # DistillFeed
-An RSS/Atom reader that provides contents ranked by AI, as well as summaries. It checks feeds normally, stores the
+RSS reader that provides contents ranked by AI, as well as summaries. It checks feeds normally, stores the
 articles locally, and can use OpenAI or Ollama to score new entries and write topic summaries.
 
 ![DistillFeed showing a ranked feed and its summary](docs/images/ai-summaries.png)
