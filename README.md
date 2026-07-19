@@ -1,9 +1,6 @@
 # DistillFeed
-
-DistillFeed is a private RSS and Atom reader for people who want a shorter,
-ranked view of their subscriptions. It checks feeds normally, stores the
-articles locally, and can use OpenAI or Ollama to score new entries and write
-topic summaries.
+An RSS/Atom reader that provides contents ranked by AI, as well as summaries. It checks feeds normally, stores the
+articles locally, and can use OpenAI or Ollama to score new entries and write topic summaries.
 
 ![DistillFeed showing a ranked feed and its summary](docs/images/ai-summaries.png)
 
@@ -12,18 +9,17 @@ topic summaries.
 - RSS and Atom reading with OPML import and export
 - AI relevance scores and concise summaries
 - A separate arXiv daily digest, included with the application
-- Clear status messages for missing credentials, deferred work, retries and
-  cost safeguards
+- Clear status messages for missing credentials, deferred work, retries and AI cost safeguards
 - Per-group and per-feed rules for optional ntfy alerts
 - OpenAI and local Ollama support
-- A guided first launch; Node.js is not required
+- A guided first launch
 - Local use by default, with Docker and server deployment files included
 
 ## Install
 
 DistillFeed requires Python 3.11 or newer on macOS or Linux.
 
-Clone or download this repository, open a terminal in the project directory,
+Clone ```git clone https://github.com/ibaaj/distillfeed``` or download this repository, open a terminal in the project directory,
 and run:
 
 ```bash
@@ -32,7 +28,7 @@ and run:
 
 On the first run, DistillFeed creates its own Python environment and opens a
 local setup page. You can accept safe starting settings or review each section.
-Nothing is saved until the final review, and setup does not contact feeds,
+Nothing is saved until the final review, and setup does not contact feeds, 
 arXiv, an AI provider or ntfy.
 
 ![DistillFeed first-launch setup](docs/images/first-launch.png)
@@ -81,8 +77,7 @@ provider account balance.
 
 ## arXiv daily digest
 
-The bundled arXiv source has its own retrieval, scoring and digest settings. Its
-first update can look back several days, so a weekend or holiday demo is not
+The bundled arXiv source has its own retrieval, scoring and digest settings inspired by this [project](https://github.com/ibaaj/arxiv-digest). Its first update can look back several days, so a weekend or holiday demo is not
 limited to that day's announcement feed.
 
 ![DistillFeed arXiv daily digest](docs/images/arxiv-digest.png)
@@ -126,7 +121,7 @@ generated_feed_directory = "/srv/distillfeed/generated-feeds"
 ```
 
 Have the separate collector atomically replace a regular file such as
-`liveuamap.xml`, then add `generated://liveuamap.xml` as a subscription.
+`personal.xml`, then add `generated://personal.xml` as a subscription.
 DistillFeed accepts only a basename in this URL, rejects symbolic links and
 oversized files, and parses the result as an ordinary feed.
 
@@ -151,56 +146,8 @@ The example configuration listens only on `127.0.0.1:8080`. Set
 `OPENAI_API_KEY` before starting the server if you prefer an
 environment-managed OpenAI credential.
 
-## Updating an existing installation
 
-Download the new release archive beside `upd.sh`, then run:
 
-```bash
-chmod +x upd.sh
-./upd.sh --archive ./distillfeed-0.22.0.tar.gz /path/to/your/distillfeed
-```
-
-The updater checks versions, creates a backup, installs the release, migrates
-state if necessary, and runs health checks. It refuses downgrades unless they
-are explicitly requested.
-
-## Tests
-
-For development:
-
-```bash
-python -m pip install -e ".[test,server]"
-python -m pytest
-```
-
-To verify the downloadable archive, place `test-distillfeed.sh` beside
-`distillfeed-0.22.0.tar.gz` and run:
-
-```bash
-chmod +x test-distillfeed.sh
-./test-distillfeed.sh
-```
-
-The verifier uses mock providers by default and does not make paid AI requests.
-The release suite contains 439 tests, including the summary and first-launch
-state machines, packaging, a no-Node installation path, managed relaunches and
-an upgrade from 0.21.1.
-
-## Deployment and security
-
-DistillFeed is designed as a single-user reader. Local mode binds to the
-loopback interface. Do not expose the development server directly to the
-internet. For remote access, use the included container or service files behind
-TLS and authentication, keep secrets in environment variables or the local
-secret store, and restrict the application's filesystem permissions.
-
-Feed URLs are network input. Private-network feed addresses are blocked by
-default. Only install plugins and personal feed generators that you trust.
-Before publishing a fork, check that `.distillfeed/`, `config.toml`, databases,
-API keys, ntfy topics and local backup files have not been committed.
-
-Security reports should be sent privately to the repository owner rather than
-opened as a public issue.
 
 ## License
 
