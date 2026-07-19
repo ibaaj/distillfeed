@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='distillfeed-icon.svg', v='0.22.0') }}">
+  <meta name="csrf-token" content="{{ csrf_token() }}"><meta name="auto-refresh" content="false">
+  <meta name="item-font-size" content="{{ ui.item_font_size }}">
+  <meta name="offline-cache-enabled" content="{{ 'true' if ui.offline_cache_enabled else 'false' }}">
+  <meta name="completion-notifications" content="{{ 'true' if ui.completion_notifications else 'false' }}">
+  <title>{{ title }} · DistillFeed</title><link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='0.22.0') }}"></head>
+<body class="summaries-page{% if ui.dark_mode %} dark-mode{% endif %}">
+  <header class="topbar page-header"><a class="brand" href="/">← DistillFeed</a><strong class="page-title">{{ title }}</strong><nav class="page-actions saved-header-links" aria-label="Saved item pages"><a class="button-link" href="/saved?view=read-later">Read later</a><a class="button-link" href="/saved?view=favorites">Favorites</a></nav></header>
+  <main class="saved-page">
+    <nav class="saved-navigation" aria-label="Saved item views">
+      <a class="{% if selected_view == 'read-later' and not selected_tag %}selected{% endif %}" href="/saved?view=read-later">Read later</a>
+      <a class="{% if selected_view == 'favorites' and not selected_tag %}selected{% endif %}" href="/saved?view=favorites">Favorites</a>
+      <a class="{% if selected_view == 'tags' and not selected_tag %}selected{% endif %}" href="/saved?view=tags">All tagged items</a>
+      <div class="tag-navigation"><strong>Tags</strong>{% for tag in tags %}<a class="{% if selected_tag == tag.name %}selected{% endif %}" href="/saved?tag={{ tag.name|urlencode }}"><span>{{ tag.name }}</span><span>{{ tag.item_count }}</span></a>{% else %}<span class="empty">No tags yet</span>{% endfor %}</div>
+    </nav>
+    <section class="saved-results"><header><h1>{{ title }}</h1><span>{{ items|length }} item{% if items|length != 1 %}s{% endif %}</span></header>
+      <div class="saved-list">{% for item in items %}<article class="item-row saved-row{% if item.is_read %} read{% endif %}" tabindex="0" data-item-id="{{ item.id }}" data-feed-id="{{ item.feed_id }}" data-read="{{ 1 if item.is_read else 0 }}" data-starred="{{ 1 if item.is_starred else 0 }}" data-read-later="{{ 1 if item.is_read_later else 0 }}">
+        <button class="star-button{% if item.is_starred %} starred{% endif %}" data-starred="{{ 1 if item.is_starred else 0 }}" aria-label="{{ 'Remove favorite' if item.is_starred else 'Add favorite' }}">★</button>
+        <button class="read-later-button" data-read-later="{{ 1 if item.is_read_later else 0 }}" aria-label="{{ 'Remove from Read later' if item.is_read_later else 'Add to Read later' }}">▣</button>
+        <span class="item-feed">{{ item.feed_title }}</span>
+        {% set safe_url = safe_external_url(item.url) %}{% if safe_url %}<a class="item-title" href="{{ safe_url }}" target="_blank" rel="noopener noreferrer">{{ item.title }}</a>{% else %}<span class="item-title">{{ item.title }}</span>{% endif %}
+        <span class="saved-tags">{{ item.tags }}</span>
+        <button class="read-button" data-read="{{ 1 if item.is_read else 0 }}" aria-label="Toggle read status">{{ '○' if item.is_read else '●' }}</button>
+      </article>{% else %}<p class="empty">Nothing has been saved here yet. Select items in the reader and use the Selected menu.</p>{% endfor %}</div>
+    </section>
+  </main><div id="toast" role="status" aria-live="polite"></div><script src="{{ url_for('static', filename='app.js', v='0.22.0') }}" defer></script>
+</body></html>

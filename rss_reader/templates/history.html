@@ -1,0 +1,8 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='distillfeed-icon.svg', v='0.22.0') }}"><title>Summary history · DistillFeed</title><link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='0.22.0') }}"></head>
+<body class="summaries-page{% if ui.dark_mode %} dark-mode{% endif %}"><header class="topbar page-header"><a class="brand" href="/">← DistillFeed</a><strong class="page-title">Summary history</strong></header>
+<main class="all-summaries"><p class="page-intro">A chronological record of generated summaries and their changes.</p>
+{% for summary in summaries %}<article class="summary-card"><header><h1>{{ summary.scope_feed_title or summary.group_title }}{% if summary.scope_feed_title %}<small> · feed summary</small>{% endif %}</h1><span>{{ display_timestamp(summary.completed_at) }} · {{ summary.model }}</span></header>
+{% if summary.changes %}<p class="summary-changes"><strong>Change note:</strong> {{ summary.changes }}</p>{% endif %}
+{% if summary.sections %}<div class="digest-sections">{% for section in summary.sections %}<section><h3>{{ section.heading }}</h3><p>{{ section.body }}</p></section>{% endfor %}</div>{% endif %}
+<div class="cost-line">{{ summary.submitted_items }} submitted items · estimated request cost ${{ '%.6f'|format(summary.estimated_cost_usd) }}</div></article>
+{% else %}<p class="empty">No summary history yet.</p>{% endfor %}</main></body></html>

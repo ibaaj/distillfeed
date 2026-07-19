@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="csrf-token" content="{{ csrf_token() }}">
+  <meta name="auto-refresh" content="{{ 'true' if auto_refresh else 'false' }}">
+  <meta name="refresh-interval-minutes" content="{{ refresh_interval_minutes }}">
+  <meta name="subscription-font-size" content="{{ ui.subscription_font_size }}">
+  <meta name="item-font-size" content="{{ ui.item_font_size }}">
+  <meta name="summary-font-size" content="{{ ui.summary_font_size }}">
+  <meta name="offline-cache-enabled" content="{{ 'true' if ui.offline_cache_enabled else 'false' }}">
+  <meta name="completion-notifications" content="{{ 'true' if ui.completion_notifications else 'false' }}">
+  <meta name="selected-group-id" content="{{ selected_group_id or '' }}">
+  <meta name="selected-feed-id" content="{{ selected_feed_id or '' }}">
+  <meta name="arxiv-digest-scope" content="{{ 'true' if is_arxiv_scope else 'false' }}">
+  <meta name="item-sort-profile" content="{{ item_sort_profile or 'date' }}">
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='distillfeed-icon.svg', v='0.22.0') }}">
+  <link rel="manifest" href="{{ url_for('static', filename='manifest.webmanifest') }}">
+  <meta name="theme-color" content="#315f9c">
+  <title>DistillFeed</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='0.22.0') }}">
+</head>
+{% set reader_notices = system_notices|default([], true) %}
+<body class="reader-page{% if ui.dark_mode %} dark-mode{% endif %}">
+  {% macro feed_node(feed) %}
+    <div class="feed-row subscription-entry{% if feed.last_error %} has-error{% endif %}" data-kind="feed" data-id="{{ feed.id }}" data-parent-id="{{ feed.parent_id or '' }}" draggable="false">
+      <span class="drag-handle subscription-edit-control" aria-hidden="true">⠿</span>
+      <a href="/?feed={{ feed.id }}" class="feed-label{% if selected_feed_id == feed.id %} selected{% endif %}">{{ feed.title }}</a>
+      {% if feed.unread %}<span class="feed-count">{{ feed.unread }}</span>{% endif %}
+      {% if not feed.is_arxiv and not feed.effective_llm %}<span class="source-paused" aria-label="Excluded from AI summaries">⏸</span>{% endif %}
+      {% if feed.last_error %}<button class="icon-button feed-retry" data-feed-id="{{ feed.id }}" aria-label="Retry failed feed {{ feed.title }}">⚠</button>{% endif %}
+      <button class="icon-button feed-properties" data-id="{{ feed.id }}" data-title="{{ feed.title }}" data-url="{{ feed.xml_url }}" data-html-url="{{ feed.html_url or '' }}" data-group-id="{{ feed.group_id }}" data-llm-enabled="{{ 1 if feed.llm_enabled else 0 }}" data-last-attempt="{{ feed.last_attempt_at or '' }}" data-last-success="{{ feed.last_success_at or '' }}" data-http-status="{{ feed.last_http_status or '' }}" data-last-error="{{ feed.last_error or '' }}" aria-label="Edit subscription properties for {{ feed.title }}">ⓘ</button>
+      <span class="subscription-actions subscription-edit-control" role="group" aria-label="Manage {{ feed.title }}">
+        <a class="summary-settings-link subscription-action" href="/ai{% if feed.is_arxiv %}#arxiv{% else %}?feed_id={{ feed.id }}#sources{% endif %}">{% if feed.is_arxiv %}Daily digest settings{% else %}AI configuration{% endif %}</a>
+        <button type="button" class="subscription-action rename-feed" data-id="{{ feed.id }}" data-title="{{ feed.title }}">Rename</button>
+        <button type="button" class="subscription-action move-parent-subscription" aria-label="Move {{ feed.title }} to another group">Move to…</button>
+        <span class="subscription-move-actions" role="group" aria-label="Move {{ feed.title }}">
+          <button type="button" class="subscription-action move-subscription" data-direction="up" aria-label="Move {{ feed.title }} up">↑</button>
+          <button type="button" class="subscription-action move-subscription" data-direction="down" aria-label="Move {{ feed.title }} down">↓</button>
+        </span>
+        <button type="button" class="subscription-action feed-delete" data-feed-id="{{ feed.id }}" data-feed-title="{{ feed.title }}">Delete</button>
+      </span>
+    </div>
+  {% endmacro %}
+
+  {% macro group_node(group) %}
+    <details class="group subscription-entry" data-kind="group" data-id="{{ group.id }}"{% if ui.groups_expanded_by_default %} open{% endif %} data-parent-id="{{ group.parent_id or '' }}" draggable="false">
+      <summary>
+        <span class="group-summary-row">
+          <span class="drag-handle subscription-edit-control" aria-hidden="true">⠿</span>
+          <a href="/?group={{ group.id }}" class="group-link{% if selected_group_id == group.id and not selected_feed_id %} selected{% endif %}">
+            <span>{{ group.title }}</span>
+            <span class="counts">{% if group.errors %}<span class="warning" aria-label="{{ group.errors }} feed errors">⚠</span>{% endif %}{% if group.unread %}{{ group.unread }}{% endif %}</span>
+          </a>
+          {% if not group.is_arxiv and not group.effective_llm %}<span class="source-paused" aria-label="Excluded from AI summaries">⏸</span>{% endif %}
+          <span class="subscription-actions subscription-edit-control" role="group" aria-label="Manage {{ group.title }}">
+            <a class="summary-settings-link subscription-action" href="/ai{% if group.is_arxiv %}#arxiv{% else %}?group_id={{ group.id }}#sources{% endif %}">{% if group.is_arxiv %}Daily digest settings{% else %}AI configuration{% endif %}</a>
+            <button type="button" class="subscription-action rename-group" data-id="{{ group.id }}" data-title="{{ group.title }}">Rename</button>
+            <button type="button" class="subscription-action move-parent-subscription" aria-label="Move {{ group.title }} to another group">Move to…</button>
+            <span class="subscription-move-actions" role="group" aria-label="Move {{ group.title }}">
+              <button type="button" class="subscription-action move-subscription" data-direction="up" aria-label="Move {{ group.title }} up">↑</button>
+              <button type="button" class="subscription-action move-subscription" data-direction="down" aria-label="Move {{ group.title }} down">↓</button>
+            </span>
+            <button type="button" class="subscription-action delete-group" data-id="{{ group.id }}" data-title="{{ group.title }}">Delete</button>
+          </span>
+        </span>
+      </summary>
+      <div class="group-content subscription-container" data-parent-id="{{ group.id }}">
+        {% for entry in group.entries %}{% if entry.kind == 'feed' %}{{ feed_node(entry) }}{% else %}{{ group_node(entry) }}{% endif %}{% endfor %}
+      </div>
+    </details>
+  {% endmacro %}
+
+  <header class="topbar">
+    <button id="menu-toggle" class="mobile-only" aria-label="Show subscriptions">☰</button>
+    <span class="brand-area"><a class="brand" href="/">DistillFeed</a>{% if app_mode == 'development' %}<span class="mode-badge">Development</span>{% endif %}</span>
+    <a id="weather-widget" class="weather-widget" href="https://open-meteo.com/" target="_blank" rel="noopener noreferrer"><span>Paris · weather…</span></a>
+    <div class="top-actions">
+      <a class="icon-only notification-link" href="/notifications" aria-label="System notices{% if notification_count %}: {{ notification_count }} notice{% if notification_count != 1 %}s{% endif %} need attention{% endif %}"><span aria-hidden="true">♢</span>{% if notification_count %}<span class="notification-badge">{{ notification_count }}</span>{% endif %}</a>
+      <details class="nav-menu saved-menu"><summary class="toolbar-action" aria-label="Open saved items"><span class="toolbar-icon" aria-hidden="true">★</span><span class="toolbar-label">Saved items</span></summary><div>
+        <a href="/saved?view=favorites">Favorites</a><a href="/saved?view=read-later">Read later</a><a href="/saved?view=tags">Tagged items</a>
+      </div></details>
+      <details class="nav-menu main-menu"><summary class="toolbar-action more-menu-button" aria-label="More DistillFeed pages and tools"><span class="toolbar-icon mobile-menu-glyph" aria-hidden="true">•••</span><span class="toolbar-label">Menu</span>{% if notification_count %}<span class="notification-badge mobile-menu-badge">{{ notification_count }}</span>{% endif %}</summary><div>
+        <a href="/">Reader</a><a href="/ai">AI summaries</a><a href="/summaries">Latest summaries</a><a href="/notifications">System notices</a>
+        <span class="menu-separator"></span><a href="/saved?view=favorites">Favorites</a><a href="/saved?view=read-later">Read later</a><a href="/saved?view=tags">Tagged items</a>
+        <span class="menu-separator"></span><a href="/history">Summary history</a><a href="/costs">AI cost explorer</a><a href="/health">Feed health</a><button id="settings-menu-button" type="button">Settings</button>
+      </div></details>
+      <button id="refresh-button" class="toolbar-action" aria-label="Check all RSS and Atom feeds" {% if 'summary-update' in locks or 'feed-refresh' in locks or 'llm-summary' in locks %}disabled{% endif %}><span aria-hidden="true">↻</span><span>Check feeds</span></button>
+      <a class="toolbar-action ai-workspace-shortcut" href="/ai"><span aria-hidden="true">✦</span><span>AI summaries</span></a>
+      <a class="toolbar-action summaries-shortcut" href="/summaries"><span aria-hidden="true">▤</span><span>Latest summaries</span></a>
+      <button id="settings-button" class="icon-only" aria-label="Settings"><span aria-hidden="true">⚙</span></button>
+    </div>
+  </header>
+  {% if reader_notices %}
+    {% set system_notice = reader_notices[0] %}
+    {% set notice_severity = system_notice.severity|default('info', true) %}
+    <section class="system-notice system-notice-{{ notice_severity }}" role="{{ 'alert' if notice_severity == 'error' else 'status' }}" aria-atomic="true">
+      <span class="system-notice-severity">{{ notice_severity|capitalize }}</span>
+      <span class="system-notice-copy"><strong>{{ system_notice.title|default('DistillFeed notice', true) }}</strong><span>{{ system_notice.message }}</span></span>
+      <span class="system-notice-actions">
+        {% if system_notice.action_url %}<a class="system-notice-action" href="{{ system_notice.action_url }}">{{ system_notice.action_label|default('Review', true) }}</a>{% endif %}
+        {% if reader_notices|length > 1 %}<a class="system-notice-more" href="/notifications">View {{ reader_notices|length - 1 }} more</a>{% endif %}
+        {% if system_notice.id %}<button class="system-notice-dismiss" type="button" data-issue-id="{{ system_notice.id }}">Dismiss</button>{% endif %}
+      </span>
+    </section>
+  {% endif %}
+  <button id="popup-backdrop" class="popup-backdrop" type="button" tabindex="-1" aria-label="Close open menu" hidden></button>
+  <button id="subscription-backdrop" class="subscription-backdrop" type="button" tabindex="-1" aria-label="Close subscriptions" hidden></button>
+
+  <div id="job-progress" class="job-progress" role="status" aria-live="polite" hidden>
+    <div class="job-progress-row"><span class="job-progress-copy"><span id="job-progress-label">Updating your reader…</span><span id="job-progress-time"></span></span><button id="job-cancel" type="button" disabled>Stop</button></div>
+    <progress id="job-progress-bar" aria-label="Update progress"></progress>
+  </div>
+
+  <nav class="mobile-tabs mobile-only" aria-label="Reader views">
+    <button data-view="items" class="active">Items</button>
+    <button data-view="summary">Summary</button>
+  </nav>
+
+  <main class="layout" id="layout">
+    <aside class="subscriptions" id="subscriptions">
+      <div class="pane-heading">
+        <span>Subscriptions</span>
+        <button id="subscription-edit-toggle" class="edit-subscriptions" type="button" aria-pressed="false">Manage</button>
+      </div>
+      <div class="pane-tools">
+        <span class="subscription-edit-control edit-actions"><button id="add-group-button" type="button">Add group</button><button id="add-feed-button" type="button">Add feed</button></span>
+        <span class="subscription-edit-control edit-help">Use the arrow buttons to reorder a source, or “Move to…” to change its group. Dragging is also available. “AI configuration” controls ordinary summaries; arXiv uses Daily digest settings.</span>
+        <label>Text <input id="subscription-font-size" type="range" min="10" max="24" value="{{ ui.subscription_font_size }}"></label>
+      </div>
+      <div class="tree subscription-container" data-parent-id="">
+        {% for entry in tree %}{% if entry.kind == 'feed' %}{{ feed_node(entry) }}{% else %}{{ group_node(entry) }}{% endif %}{% else %}<p class="empty">Import an OPML file or add a group.</p>{% endfor %}
+      </div>
+    </aside>
+    <div class="pane-resizer" data-resizer="left" role="separator" aria-label="Resize subscriptions pane"></div>
+
+    <section class="items-pane view-active" data-pane="items">
+      <div class="pane-heading">
+        <span><span id="items-scope-title">{% if scope_title %}{{ scope_title }}{% else %}Items{% endif %}</span> <span class="muted">({{ items|length }})</span></span>
+        <span class="item-controls">
+          {% if selected_feed_id or selected_group_id %}<button id="scope-refresh-button" class="summary-scope-action secondary-action" aria-label="{% if is_arxiv_scope %}Check configured arXiv categories{% else %}Check RSS and Atom feeds in {{ scope_title }}{% endif %}" {% if 'summary-update' in locks or 'feed-refresh' in locks or 'llm-summary' in locks %}disabled{% endif %}><span aria-hidden="true">↻</span><span>{% if is_arxiv_scope %}Check arXiv{% else %}Check feeds{% endif %}</span></button>{% endif %}
+          <label>Sort <select id="item-sort"><option value="date">Date</option><option value="relevance">AI relevance</option></select></label>
+          <label>Text <input id="font-size" type="range" min="10" max="24" value="{{ ui.item_font_size }}"></label>
+        </span>
+      </div>
+      <div class="item-filterbar">
+        <input id="item-search" type="search" placeholder="Search visible items" aria-label="Search visible items">
+        <select id="item-filter" aria-label="Filter items"><option value="all">All</option><option value="unread">Unread</option><option value="starred">Starred</option><option value="read-later">Read later</option></select>
+        <div class="item-filter-actions"><label class="select-visible"><input id="select-visible-items" type="checkbox"> Select shown</label>
+        <details id="selected-actions" class="action-menu disabled"><summary>Selected <span id="selected-count"></span></summary><div>
+          <button id="mark-selected-read" disabled>Mark as read</button>
+          <button id="mark-selected-unread" disabled>Mark as unread</button>
+          <button id="save-selected-later" disabled>Add to Read later</button>
+          <button id="favorite-selected" disabled>Add to Favorites</button>
+          <button id="tag-selected" disabled>Assign tags…</button>
+        </div></details>
+        <details class="action-menu scope-actions"><summary>More</summary><div><button id="mark-scope-read">Mark every item in {{ scope_title or 'this selection' }} as read</button><button id="mark-scope-unread">Mark every item in {{ scope_title or 'this selection' }} as unread</button></div></details>
+        <span id="visible-count" class="muted"></span></div>
+      </div>
+      <div class="item-list" data-sort-profile="{{ item_sort_profile or 'date' }}">
+        {% for item in items %}
+          {% set item_relevance = item.display_relevance if item.display_relevance is defined else item.relevance %}
+          <article class="item-row{% if item.plugin_html is defined %} plugin-item{% endif %}{% if item.is_read %} read{% endif %}" tabindex="0" data-item-id="{{ item.id }}" data-feed-id="{{ item.feed_id }}" data-read="{{ 1 if item.is_read else 0 }}" data-starred="{{ 1 if item.is_starred else 0 }}" data-read-later="{{ 1 if item.is_read_later else 0 }}" data-tags="{{ item.tags }}" data-relevance="{{ item_relevance if item_relevance is not none else -1 }}" data-date="{{ item.published_at or item.discovered_at }}">
+            <input class="item-select" type="checkbox" aria-label="Select {{ item.title }}">
+            <button class="star-button{% if item.is_starred %} starred{% endif %}" aria-label="{{ 'Remove favorite' if item.is_starred else 'Add favorite' }}" data-starred="{{ 1 if item.is_starred else 0 }}">★</button>
+            {% if item.plugin_html is defined %}
+            <div class="plugin-item-content">{{ item.plugin_html|safe }}</div>
+            <button class="read-button" data-read="{{ 1 if item.is_read else 0 }}" aria-label="{{ 'Mark as unread' if item.is_read else 'Mark as read' }}">{{ '○' if item.is_read else '●' }}</button>
+            {% else %}
+            <button class="item-details-toggle" type="button" aria-expanded="false" aria-controls="item-details-{{ item.id }}" aria-label="Show details for {{ item.title }}"><span aria-hidden="true">›</span></button>
+            <a class="item-feed item-feed-link" href="/?feed={{ item.feed_id }}">{{ item.feed_title }}</a>
+            {% set safe_url = safe_external_url(item.url) %}{% if safe_url %}<a class="item-title" href="{{ safe_url }}" target="_blank" rel="noopener noreferrer">{{ item.title }}</a>{% else %}<span class="item-title">{{ item.title }}</span>{% endif %}
+            {% if item.relevance is not none %}<span class="relevance" aria-label="AI relevance {{ item.relevance }}{% if item.relevance_justification %}. {{ item.relevance_justification }}{% endif %}">{{ item.relevance }}</span>
+            {% elif not item.ai_active %}<span class="ranking-status" aria-label="Source excluded from AI summaries">Paused</span>
+            {% elif item.summary_eligible %}<span class="ranking-status" aria-label="Eligible and waiting for a successful AI evaluation">Pending</span>
+            {% else %}<span class="ranking-status" aria-label="Historical item outside the current AI eligibility window">Historical</span>{% endif %}
+            <button class="read-button" data-read="{{ 1 if item.is_read else 0 }}" aria-label="{{ 'Mark as unread' if item.is_read else 'Mark as read' }}">{{ '○' if item.is_read else '●' }}</button>
+            <div class="item-details" id="item-details-{{ item.id }}" hidden>
+              <dl>
+                <div><dt>Date</dt><dd><time class="item-detail-date" datetime="{{ item.published_at or item.discovered_at }}">{{ item.published_at or item.discovered_at }}</time></dd></div>
+                <div><dt>URL</dt><dd>{% if safe_url %}<a href="{{ safe_url }}" target="_blank" rel="noopener noreferrer">{{ safe_url }}</a>{% else %}<span class="muted">Unavailable</span>{% endif %}</dd></div>
+                <div><dt>Title</dt><dd>{{ item.title }}</dd></div>
+                {% if item.description_text %}<div><dt>Description</dt><dd class="item-detail-description">{{ item.description_text }}</dd></div>{% endif %}
+              </dl>
+            </div>
+            {% endif %}
+          </article>
+        {% else %}<p class="empty">No items in this selection yet.</p>{% endfor %}
+      </div>
+    </section>
+    <div class="pane-resizer" data-resizer="middle" role="separator" aria-label="Resize items pane"></div>
+
+    <section class="summary-pane" data-pane="summary">
+      <div class="pane-heading summary-pane-heading">
+        <span class="summary-pane-title">Summary<span id="summary-scope-title">{% if scope_title %} · {{ scope_title }}{% endif %}</span></span>
+        <span class="summary-heading-tools">
+          {% if selected_feed_id or selected_group_id %}
+            <button id="scope-update-button" class="summary-scope-action primary-action" data-ai-off="{{ 'true' if scope_ai_mode == 'off' else 'false' }}" aria-label="{% if is_arxiv_scope %}Update the daily arXiv digest{% elif scope_ai_mode == 'off' %}Enable AI for {{ scope_title }}{% else %}Update the summary for {{ scope_title }}{% endif %}" {% if 'summary-update' in locks or 'feed-refresh' in locks or 'llm-summary' in locks %}disabled{% endif %}><span aria-hidden="true">✦</span><span>{% if is_arxiv_scope %}Update daily digest{% elif scope_ai_mode == 'off' %}Enable AI{% else %}Update this summary{% endif %}</span></button>
+            {% if not is_arxiv_scope %}<details id="summary-ai-config" class="summary-ai-config action-menu" data-source-kind="{{ 'feeds' if selected_feed_id else 'groups' }}" data-source-id="{{ selected_feed_id or selected_group_id }}"><summary aria-label="Configure AI for {{ scope_title }}">AI configuration</summary><div>
+              <label><span>Use AI</span><select data-summary-source-field="ai_mode">{% if selected_feed_id %}<option value="inherit" {% if scope_ai_own_mode == 'inherit' %}selected{% endif %}>Follow group</option>{% endif %}<option value="automatic" {% if scope_ai_own_mode == 'automatic' %}selected{% endif %}>Automatic</option><option value="manual" {% if scope_ai_own_mode == 'manual' %}selected{% endif %}>Only on request</option><option value="off" {% if scope_ai_own_mode == 'off' %}selected{% endif %}>Never use AI</option></select></label>
+              {% if not selected_feed_id %}<label><span>Priority in global updates</span><select data-summary-source-field="ai_priority"><option value="high" {% if scope_ai_priority == 'high' %}selected{% endif %}>High</option><option value="normal" {% if scope_ai_priority == 'normal' %}selected{% endif %}>Normal</option><option value="low" {% if scope_ai_priority == 'low' %}selected{% endif %}>Low</option></select></label><label><span>Automatic interval</span><select data-summary-source-field="summary_interval_hours"><option value="0" {% if scope_summary_interval_hours == 0 %}selected{% endif %}>Every scheduled update</option><option value="1" {% if scope_summary_interval_hours == 1 %}selected{% endif %}>At most hourly</option><option value="6" {% if scope_summary_interval_hours == 6 %}selected{% endif %}>At most every 6 hours</option><option value="12" {% if scope_summary_interval_hours == 12 %}selected{% endif %}>At most every 12 hours</option><option value="24" {% if scope_summary_interval_hours == 24 %}selected{% endif %}>At most daily</option><option value="168" {% if scope_summary_interval_hours == 168 %}selected{% endif %}>At most weekly</option></select></label><label><span>Maximum entries per update</span><input data-summary-source-field="summary_item_budget" type="number" min="0" max="1000" value="{{ scope_summary_item_budget }}"><small>0 lets the global workload decide.</small></label>{% else %}<p>This feed uses its group’s priority and schedule.</p>{% endif %}
+              <p>Each entry is evaluated once. This summary displays entries scoring at least {{ summary_minimum_relevance }}/100 from the last {{ summary_evidence_hours }} hours.</p><button id="summary-ai-config-save" type="button">Save AI configuration</button>
+            </div></details>{% endif %}
+          {% endif %}
+          {% if summary %}<span class="muted summary-updated-at" aria-label="Last updated {{ display_timestamp(summary.completed_at) }}">{{ display_timestamp(summary.completed_at) }}</span>{% endif %}
+          <label class="summary-text-size">Text <input id="summary-font-size" type="range" min="10" max="24" value="{{ ui.summary_font_size }}"></label><button id="summary-help-button" class="summary-help-button" type="button" aria-label="How this summary is updated" aria-haspopup="dialog">?</button>
+        </span>
+      </div>
+      <div class="summary-content">
+        {% if scope_arxiv_error %}<div class="scope-status scope-status-error"><strong>arXiv AI update failed.</strong> {{ scope_arxiv_error }} The shortlisted papers remain ready. <button id="scope-update-inline" type="button">Retry daily digest</button></div>{% elif scope_ai_mode == 'off' %}<div class="scope-status"><strong>AI is off for this source.</strong> Its stored summary remains readable. <button id="scope-enable-ai" type="button">Enable AI</button></div>{% elif summary_stale %}<div class="scope-status"><strong>{% if is_arxiv_scope %}A new arXiv announcement is waiting.{% else %}This summary has an update available.{% endif %}</strong> {% if is_arxiv_scope %}{{ scope_pending_items }} locally shortlisted paper{% if scope_pending_items != 1 %}s are{% else %} is{% endif %} ready for the one daily digest. <button id="scope-update-inline" type="button">Update daily digest</button>{% else %}{{ scope_pending_items }} feed entr{% if scope_pending_items == 1 %}y is{% else %}ies are{% endif %} waiting for evaluation. This summary displays scores of at least {{ summary_minimum_relevance }}/100 from the last {{ summary_evidence_hours }} hours. <button id="scope-update-inline" type="button">Update this summary</button>{% endif %}</div>{% elif scope_pending_items and not is_arxiv_scope %}<div class="scope-status"><strong>{{ scope_pending_items }} feed entr{% if scope_pending_items == 1 %}y is{% else %}ies are{% endif %} waiting for evaluation.</strong> This summary displays scores of at least {{ summary_minimum_relevance }}/100 from the last {{ summary_evidence_hours }} hours. <a href="/ai?{% if selected_feed_id %}feed_id={{ selected_feed_id }}{% else %}group_id={{ selected_group_id }}{% endif %}#queue">View entries</a>.</div>{% endif %}
+        {% if summary %}
+          {% for digest in summary_overviews %}{% if digest.changes %}<p class="summary-changes"><strong>{% if summary_overviews|length > 1 %}{{ digest.group_title }} · {% endif %}New since the previous summary:</strong> {{ digest.changes }}</p>{% endif %}{% endfor %}
+          {% if summary_sections %}<div class="digest-sections">{% for section in summary_sections %}<section><h3>{% if summary_overviews|length > 1 %}{{ section.group_title }} · {% endif %}{{ section.heading }}</h3><p>{{ section.body }}</p></section>{% endfor %}</div>{% endif %}
+          <div class="story-clusters">{% for cluster in summary_clusters %}<section class="story-cluster"><h2>{{ cluster.label }}</h2><div class="cluster-score">Highest relevance {{ cluster.importance }}/100 · {{ cluster['items']|length }} source{% if cluster['items']|length != 1 %}s{% endif %}</div><ul>
+            {% for item in cluster['items'] %}{% set safe_url = safe_external_url(item.url) %}<li><h3>{% if safe_url %}<a href="{{ safe_url }}" target="_blank" rel="noopener noreferrer">{{ item.title }}</a>{% else %}{{ item.title }}{% endif %}</h3><div class="summary-feed"><span class="summary-group-name" data-group-id="{{ item.group_id }}">{{ item.group_title }}</span> · <span class="summary-feed-name" data-feed-id="{{ item.feed_id }}">{{ item.feed_title }}</span> · {{ item.importance }}/100</div><p>{{ item.description }}</p>{% if item.justification %}<p class="justification"><strong>Why relevant:</strong> {{ item.justification }}</p>{% endif %}</li>{% endfor %}
+          </ul></section>{% endfor %}</div>
+          <div class="cost-line">{{ summary.model }} · {{ summary.input_tokens }} input · {{ summary.output_tokens }} output · whole-request estimate ${{ '%.6f'|format(summary.estimated_cost_usd) }}{% if merged_summary_count > 1 %} · rolling view combines {{ merged_summary_count }} recent summaries{% endif %}{% if summary.deferred_items %} · {{ summary.deferred_items }} deferred{% endif %}</div>
+        {% else %}<div class="summary-empty-state"><strong>{% if is_arxiv_scope %}No daily arXiv digest exists yet.{% else %}No AI summary exists for this selection yet.{% endif %}</strong><p>{% if is_arxiv_scope %}<strong>Update daily digest</strong> checks every configured arXiv category, locally screens new papers, and uses the specialist ranking recipe once for a new announcement day.{% else %}<strong>Update this summary</strong> checks its RSS and Atom feeds, evaluates eligible feed entries, and publishes one summary for this exact selection.{% endif %}</p><a href="/ai{% if is_arxiv_scope %}#arxiv{% else %}?{% if selected_feed_id %}feed_id={{ selected_feed_id }}{% else %}group_id={{ selected_group_id }}{% endif %}{% endif %}">Open {% if is_arxiv_scope %}arXiv digest{% else %}AI summary{% endif %} settings</a></div>{% endif %}
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <dialog id="summary-help-dialog" class="summary-help-dialog" aria-labelledby="summary-help-title"><div class="summary-help-card"><header><h2 id="summary-help-title">{% if is_arxiv_scope %}How the daily arXiv digest works{% else %}How this summary is updated{% endif %}</h2><button id="summary-help-close" type="button" aria-label="Close help">×</button></header>{% if is_arxiv_scope %}<p><strong>Check arXiv</strong> reads every configured category and locally screens unseen papers. It does not call the ranking model.</p><p><strong>Update daily digest</strong> checks first, then—only when a new announcement day is waiting—ranks the shortlist and publishes one combined digest. Repeating it on the same announcement does not create another digest.</p><p>This specialist recipe, shortlist and ntfy threshold are separate from ordinary feed summaries.</p><a class="button-link" href="/ai#arxiv">Open arXiv digest settings</a>{% else %}<p><strong>Check feeds</strong> reads the selected RSS and Atom documents and stores new feed entries. It does not open linked webpages or use AI.</p><p><strong>Update this summary</strong> checks those feeds, then sends waiting titles and feed-provided descriptions to your configured model. Each entry is evaluated once after a successful response; DistillFeed then publishes one new summary for this exact selection.</p><p>Entries excluded by you are never selected. Sources set to “Only on request” are included when you update their own summary.</p><a class="button-link" href="/ai?{% if selected_feed_id %}feed_id={{ selected_feed_id }}{% elif selected_group_id %}group_id={{ selected_group_id }}{% endif %}">Open AI summary settings</a>{% endif %}</div></dialog>
+
+  <dialog id="group-dialog"><form method="dialog" id="group-form"><h2>Add group</h2>
+    <label>Title<input name="title" maxlength="200" required></label>
+    <label>Parent group<select name="parent_id"><option value="">Top level</option>{% for group in groups %}<option value="{{ group.id }}">{{ group.title }}</option>{% endfor %}</select></label>
+    <div class="dialog-actions"><button class="dialog-cancel" type="button">Cancel</button><button value="default" type="submit">Add</button></div></form></dialog>
+
+  <dialog id="feed-dialog"><form method="dialog" id="feed-form"><h2>Add RSS or Atom feed</h2><p class="help">The subscription is saved first, then checked. If its publisher refuses retrieval, it remains available with details in Feed health.{% if generated_feeds_enabled %} Server-managed feed files can use <code>generated://name.xml</code>.{% endif %}</p>
+    <label>Feed source<input name="xml_url" type="url" inputmode="url" required placeholder="https://example.com/feed.xml{% if generated_feeds_enabled %} or generated://name.xml{% endif %}"></label>
+    <label>Short name (optional)<input name="title" maxlength="300"></label>
+    <label>Group<select name="group_id" required><option value="{{ ungrouped_id }}"{% if ungrouped_id == selected_group_id %} selected{% endif %}>No group (top level)</option>{% for group in groups %}<option value="{{ group.id }}"{% if group.id == selected_group_id %} selected{% endif %}>{{ group.title }}</option>{% endfor %}</select></label>
+    <div class="dialog-actions"><button class="dialog-cancel" type="button">Cancel</button><button value="default" type="submit">Add</button></div></form></dialog>
+
+  <dialog id="feed-properties-dialog"><form method="dialog" id="feed-properties-form"><h2>Subscription properties</h2>
+    <input name="id" type="hidden">
+    <label>Name<input name="title" maxlength="300" required autocomplete="off"></label>
+    <label>RSS, Atom, or generated source<input name="xml_url" type="url" inputmode="url" required></label>
+    <label>Group<select name="group_id" required><option value="{{ ungrouped_id }}">No group (top level)</option>{% for group in groups %}<option value="{{ group.id }}">{{ group.title }}</option>{% endfor %}</select></label>
+    <p id="feed-properties-status" class="feed-properties-status"></p>
+    <p><a id="feed-properties-website" href="#" target="_blank" rel="noopener noreferrer" hidden>Open publisher website</a></p>
+    <div class="dialog-actions"><button id="feed-properties-retry" type="button">Refresh this feed</button><button class="dialog-cancel" type="button">Cancel</button><button type="submit">Save properties</button></div>
+  </form></dialog>
+
+  <dialog id="rename-dialog"><form method="dialog" id="rename-form"><h2 id="rename-heading">Rename</h2>
+    <input name="kind" type="hidden"><input name="id" type="hidden">
+    <label>Name<input name="title" maxlength="300" required autocomplete="off"></label>
+    <div class="dialog-actions"><button class="dialog-cancel" type="button">Cancel</button><button value="default" type="submit">Save name</button></div>
+  </form></dialog>
+
+  <dialog id="move-subscription-dialog" aria-labelledby="move-subscription-heading"><form method="dialog" id="move-subscription-form"><h2 id="move-subscription-heading">Move source</h2>
+    <p id="move-subscription-help" class="help">Choose a new group. The source will be placed last there; use the arrow buttons afterward to fine-tune its order.</p>
+    <input name="kind" type="hidden"><input name="id" type="hidden">
+    <label>Destination group<select name="parent_id" aria-describedby="move-subscription-help move-subscription-status"></select></label>
+    <p id="move-subscription-status" class="help" role="status" aria-live="polite"></p>
+    <div class="dialog-actions"><button class="dialog-cancel" type="button">Cancel</button><button id="move-subscription-submit" type="submit">Move source</button></div>
+  </form></dialog>
+
+  <dialog id="confirm-dialog"><form method="dialog"><h2 id="confirm-heading">Confirm action</h2><p id="confirm-message"></p>
+    <div class="dialog-actions"><button value="cancel">Cancel</button><button id="confirm-action" class="danger-action" value="confirm">Confirm</button></div>
+  </form></dialog>
+
+  <dialog id="tag-dialog"><form method="dialog" id="tag-form"><h2>Tag selected items</h2>
+    <label>Tags<input name="tags" placeholder="research, climate, follow-up" autocomplete="off"><span class="help">Separate tags with commas. Leave empty to remove tags.</span></label>
+    <div class="dialog-actions"><button class="dialog-cancel" type="button">Cancel</button><button type="submit">Save tags</button></div>
+  </form></dialog>
+
+  <dialog id="data-dialog"><div><h2>Backup and restore</h2><p>Download a portable snapshot containing SQLite, OPML, and a configuration reference.</p>
+    <p class="data-downloads"><a class="button-link" href="/api/backup">Download backup</a><a class="button-link" href="/api/export-opml">Download subscriptions (OPML)</a></p>
+    <form id="restore-form"><label>Restore a backup<input name="backup" type="file" accept=".zip,application/zip" required></label><label class="checkbox-label"><input name="confirm" type="checkbox" required> I understand that current data will be replaced after a safety backup is created.</label>
+    <div class="dialog-actions"><button class="dialog-cancel" type="button">Cancel</button><button type="submit">Restore data</button></div></form>
+  </div></dialog>
+
+  {% macro config_input(field) %}
+    <label class="settings-field{% if field.type == 'bool' %} settings-field-toggle{% endif %}{% if field.path == 'app.interest_profile' or (field.widget is defined and field.widget == 'textarea') %} settings-field-wide{% endif %}"><span class="settings-field-label">{{ field.label }}</span>
+      {% if field.path == 'app.mode' %}<select data-config-path="{{ field.path }}" data-type="str"><option value="local" {% if field.value == 'local' %}selected{% endif %}>Local · this computer only</option><option value="development" {% if field.value == 'development' %}selected{% endif %}>Development</option><option value="production" {% if field.value == 'production' %}selected{% endif %}>Production</option></select>
+      {% elif field.path == 'llm.provider' %}<select data-config-path="{{ field.path }}" data-type="str"><option value="openai" {% if field.value == 'openai' %}selected{% endif %}>OpenAI</option><option value="ollama" {% if field.value == 'ollama' %}selected{% endif %}>Ollama (local)</option></select>
+      {% elif field.path == 'llm.model' %}<select data-config-path="{{ field.path }}" data-type="str">{% if field.value not in ('gpt-5.4-nano','gpt-5.4-mini') %}<option value="{{ field.value }}" selected>{{ field.value }} · Custom</option>{% endif %}<option value="gpt-5.4-nano" {% if field.value == 'gpt-5.4-nano' %}selected{% endif %}>Economy · GPT-5.4 nano</option><option value="gpt-5.4-mini" {% if field.value == 'gpt-5.4-mini' %}selected{% endif %}>Quality · GPT-5.4 mini</option></select>
+      {% elif field.path == 'notifications.ntfy.priority' %}<select data-config-path="{{ field.path }}" data-type="str">{% for value in ('min','low','default','high','max') %}<option value="{{ value }}" {% if field.value == value %}selected{% endif %}>{{ value|capitalize }}</option>{% endfor %}</select>
+      {% elif field.path == 'llm.review_workload' %}<select data-config-path="{{ field.path }}" data-type="str"><option value="focused" {% if field.value == 'focused' %}selected{% endif %}>Focused · up to 80</option><option value="balanced" {% if field.value == 'balanced' %}selected{% endif %}>Balanced · up to 200</option><option value="wide" {% if field.value == 'wide' %}selected{% endif %}>Wide · up to 500</option></select>
+      {% elif field.path in ('app.summary_language', 'weather.language') %}<select data-config-path="{{ field.path }}" data-type="str"><option value="French" {% if field.value == 'French' %}selected{% endif %}>Français</option><option value="English" {% if field.value == 'English' %}selected{% endif %}>English</option></select>
+      {% elif field.path == 'app.interest_profile' %}<textarea data-config-path="{{ field.path }}" data-type="str" rows="3" placeholder="For example: science, climate, technology">{{ field.value }}</textarea>
+      {% elif field.options is defined %}<select data-config-path="{{ field.path }}" data-type="{{ field.type }}">{% for value in field.options %}<option value="{{ value }}" {% if field.value == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select>
+      {% elif field.widget is defined and field.widget == 'textarea' %}<textarea data-config-path="{{ field.path }}" data-type="{{ field.type }}" rows="{{ field.rows or 5 }}">{{ field.value }}</textarea>
+      {% elif field.type == 'bool' %}<input class="settings-switch" data-config-path="{{ field.path }}" data-type="bool" type="checkbox" role="switch" {% if field.value %}checked{% endif %}>
+      {% elif field.type in ('int','float') %}<input data-config-path="{{ field.path }}" data-type="{{ field.type }}" type="number" step="{% if field.type == 'float' %}any{% else %}1{% endif %}" value="{{ field.value }}">
+      {% else %}<input data-config-path="{{ field.path }}" data-type="str" value="{{ field.value }}">{% endif %}
+    </label>
+  {% endmacro %}
+  {% set settings_categories = (
+    ('Appearance', 'appearance', 'Aa', 'Text size and reading preferences'),
+    ('Weather', 'weather', '☁', 'Location and forecast language'),
+    ('Updates', 'updates', '↻', 'Reader refresh and completion alerts')
+  ) %}
+  <dialog id="settings-dialog" class="settings-dialog" aria-labelledby="settings-title"><form id="settings-form" class="settings-form">
+    <header class="settings-sticky-header">
+      <div class="settings-header-copy"><h2 id="settings-title">Settings</h2><p>Personalize how DistillFeed reads, ranks and updates.</p></div>
+      <div class="settings-header-actions"><button id="settings-close-button" type="button">Close</button><button id="save-settings-button" class="primary-action" type="submit">Save settings</button></div>
+      <p id="settings-status" class="settings-status" role="status" aria-live="polite"></p>
+    </header>
+    <div class="settings-shell">
+      <nav class="settings-sidebar" aria-label="Settings categories">
+        <p class="settings-sidebar-label">Preferences</p>
+        <button class="settings-nav-button" type="button" data-settings-target="settings-ai" aria-controls="settings-ai" aria-pressed="false"><span class="settings-nav-icon ai" aria-hidden="true">✦</span><span><strong>AI summaries</strong><small>Model, writing and automatic updates</small></span><span class="settings-nav-chevron" aria-hidden="true">›</span></button>
+        <button class="settings-nav-button" type="button" data-settings-target="settings-notifications" aria-controls="settings-notifications" aria-pressed="false"><span class="settings-nav-icon notifications" aria-hidden="true">↑</span><span><strong>Other devices</strong><small>Send selected articles with ntfy</small></span><span class="settings-nav-chevron" aria-hidden="true">›</span></button>
+        {% for category, slug, icon, description in settings_categories %}<button class="settings-nav-button{% if loop.first %} active{% endif %}" type="button" data-settings-target="settings-{{ slug }}" aria-controls="settings-{{ slug }}" aria-pressed="{{ 'true' if loop.first else 'false' }}"><span class="settings-nav-icon {{ slug }}" aria-hidden="true">{{ icon }}</span><span><strong>{{ category }}</strong><small>{{ description }}</small></span><span class="settings-nav-chevron" aria-hidden="true">›</span></button>{% endfor %}
+        <p class="settings-sidebar-label settings-sidebar-label-more">System</p>
+        <button class="settings-nav-button" type="button" data-settings-target="settings-advanced" aria-controls="settings-advanced" aria-pressed="false"><span class="settings-nav-icon advanced" aria-hidden="true">•••</span><span><strong>Advanced</strong><small>Storage, security and request limits</small></span><span class="settings-nav-chevron" aria-hidden="true">›</span></button>
+      </nav>
+      <div class="settings-content">
+        <details id="settings-ai" class="settings-panel" data-settings-panel>
+          <summary class="settings-panel-summary"><span class="settings-nav-icon ai" aria-hidden="true">✦</span><span><strong>AI summaries</strong><small>Model, writing and automatic updates</small></span></summary>
+          <div class="settings-panel-body"><header class="settings-panel-heading"><h3>AI summaries</h3><p>Configure the ordinary-feed summary workflow without leaving Settings.</p></header><div class="settings-grid">
+            {% for field in config_fields %}{% if field.category == 'AI summaries' %}{{ config_input(field) }}{% endif %}{% endfor %}
+          </div><div class="settings-submenu" aria-label="Detailed AI summary tools"><a href="/ai#overview"><span><strong>How updates work</strong><small>Next selection and estimated requests</small></span><b>›</b></a><a href="/ai#queue"><span><strong>Waiting entries</strong><small>Inspect or exclude individual entries</small></span><b>›</b></a><a href="/ai#sources"><span><strong>All source configurations</strong><small>Modes, priorities, schedules and limits</small></span><b>›</b></a>{% if arxiv_available %}<a href="/ai#arxiv"><span><strong>arXiv daily digest</strong><small>Independent announcement-driven workflow</small></span><b>›</b></a>{% endif %}</div></div>
+        </details>
+        <details id="settings-notifications" class="settings-panel" data-settings-panel>
+          <summary class="settings-panel-summary"><span class="settings-nav-icon notifications" aria-hidden="true">↑</span><span><strong>Other devices</strong><small>Send selected articles with ntfy</small></span></summary>
+          <div class="settings-panel-body"><header class="settings-panel-heading"><h3>Send alerts to other devices with ntfy</h3><p>This is outbound delivery to phones and other ntfy clients. DistillFeed’s own operational messages are <a href="/notifications">System notices</a>.</p></header><div class="settings-grid">
+            {% for field in config_fields %}{% if field.category == 'Device alerts' %}{{ config_input(field) }}{% endif %}{% endfor %}
+          </div>
+          <fieldset class="ntfy-scope-editor"><legend>Article sources and thresholds</legend>
+            <p class="settings-note">A feed rule overrides its groups. Otherwise the nearest selected group applies. Each alert still has to meet the matching threshold.</p>
+            <label class="settings-field settings-field-wide"><span class="settings-field-label">Sources allowed to send</span><select data-config-path="notifications.ntfy.scope_mode" data-type="str"><option value="all" {% if ntfy_scope.mode == 'all' %}selected{% endif %}>All ordinary RSS and Atom feeds</option><option value="selected" {% if ntfy_scope.mode == 'selected' %}selected{% endif %}>Only selected groups and feeds</option></select></label>
+            <details class="ntfy-scope-list" {% if ntfy_scope.groups|selectattr('selected')|list %}open{% endif %}><summary>OPML groups <span>{{ ntfy_scope.groups|selectattr('selected')|list|length }} selected</span></summary><div>
+              {% for group in ntfy_scope.groups %}<div class="ntfy-scope-rule"><label class="checkbox-label"><input type="checkbox" data-config-path="notifications.ntfy.scopes.group.{{ group.id }}.enabled" data-type="bool" {% if group.selected %}checked{% endif %}><span><strong>{{ group.title }}</strong><small>Includes feeds in descendant groups unless a feed rule overrides it.</small></span></label><label class="ntfy-threshold">Threshold <input type="number" min="0" max="100" step="1" data-config-path="notifications.ntfy.scopes.group.{{ group.id }}.threshold" data-type="int" value="{{ group.minimum_relevance }}"></label></div>{% else %}<p class="settings-note">No ordinary OPML group is available yet.</p>{% endfor %}
+            </div></details>
+            <details class="ntfy-scope-list" {% if ntfy_scope.feeds|selectattr('selected')|list %}open{% endif %}><summary>Individual feeds <span>{{ ntfy_scope.feeds|selectattr('selected')|list|length }} selected</span></summary><div>
+              {% for feed in ntfy_scope.feeds %}<div class="ntfy-scope-rule"><label class="checkbox-label"><input type="checkbox" data-config-path="notifications.ntfy.scopes.feed.{{ feed.id }}.enabled" data-type="bool" {% if feed.selected %}checked{% endif %}><span><strong>{{ feed.title }}</strong><small>{{ feed.group_title }}</small></span></label><label class="ntfy-threshold">Threshold <input type="number" min="0" max="100" step="1" data-config-path="notifications.ntfy.scopes.feed.{{ feed.id }}.threshold" data-type="int" value="{{ feed.minimum_relevance }}"></label></div>{% else %}<p class="settings-note">Add an ordinary RSS or Atom feed before creating a feed rule.</p>{% endfor %}
+            </div></details>
+          </fieldset>
+          <div class="settings-action-row"><button id="ntfy-test-button" type="button">Send test alert</button><span>Save device-alert changes before testing. Delivery history stays in <a href="/notifications#device-alerts">System notices</a>.</span></div></div>
+        </details>
+        {% for category, slug, icon, description in settings_categories %}
+          <details id="settings-{{ slug }}" class="settings-panel{% if loop.first %} active{% endif %}" data-settings-panel {% if loop.first %}open{% endif %}>
+            <summary class="settings-panel-summary"><span class="settings-nav-icon {{ slug }}" aria-hidden="true">{{ icon }}</span><span><strong>{{ category }}</strong><small>{{ description }}</small></span></summary>
+            <div class="settings-panel-body"><header class="settings-panel-heading"><h3>{{ category }}</h3><p>{{ description }}</p></header><div class="settings-grid">
+              {% for field in config_fields %}{% if field.category == category %}{{ config_input(field) }}{% endif %}{% endfor %}
+            </div>{% if category == 'Updates' %}<aside class="settings-note">These controls decide when feeds are checked. To let scheduled checks use AI afterward, enable “Update summaries after checking feeds” in <a href="/ai#automation">AI summaries → Automation</a>.</aside>{% endif %}</div>
+          </details>
+        {% endfor %}
+        <details id="settings-advanced" class="settings-panel" data-settings-panel>
+          <summary class="settings-panel-summary"><span class="settings-nav-icon advanced" aria-hidden="true">•••</span><span><strong>Advanced</strong><small>Storage, security and request limits</small></span></summary>
+          <div class="settings-panel-body"><header class="settings-panel-heading"><h3>Advanced</h3><p>Storage, security and request limits</p></header><aside class="settings-note">Some server, storage and security changes require a restart.</aside><div class="settings-grid">
+            {% for field in config_fields %}{% if field.category == 'Advanced' %}{{ config_input(field) }}{% endif %}{% endfor %}
+          </div><div class="settings-action-row"><button id="data-tools-button" type="button">Backup and restore…</button><span>Export or restore your local reader data.</span></div></div>
+        </details>
+      </div>
+    </div>
+  </form></dialog>
+
+  <script src="{{ url_for('static', filename='app.js', v='0.22.0') }}" defer></script>
+</body>
+</html>

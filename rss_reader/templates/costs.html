@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='distillfeed-icon.svg', v='0.22.0') }}">
+  <title>AI costs · DistillFeed</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='0.22.0') }}">
+</head>
+<body class="summaries-page{% if ui.dark_mode %} dark-mode{% endif %}">
+  <header class="topbar page-header">
+    <a class="brand" href="/">← DistillFeed</a>
+    <strong class="page-title">AI cost explorer</strong>
+    <nav class="page-actions" aria-label="Cost page links"><a class="button-link" href="/notifications">System notices</a></nav>
+  </header>
+  <main class="notifications-page cost-explorer">
+    <p class="page-intro">Stored token usage and estimated request costs. Ollama runs remain visible with a zero provider cost.</p>
+    <nav class="period-picker" aria-label="Cost history period">
+      {% for value,label in ((7,'7 days'),(30,'30 days'),(90,'90 days'),(365,'1 year'),(0,'All')) %}<a href="/costs?days={{ value }}" {% if cost_days == value %}aria-current="page"{% endif %}>{{ label }}</a>{% endfor %}
+    </nav>
+    <section class="notification-summary" aria-label="AI cost totals">
+      <div class="notification-stat"><strong>${{ '%.4f'|format(cost_totals.total_cost) }}</strong><span>estimated cost</span></div>
+      <div class="notification-stat"><strong>{{ cost_totals.request_count }}</strong><span>model requests</span></div>
+      <div class="notification-stat"><strong>{{ cost_totals.submitted_items }}</strong><span>submitted items</span></div>
+      <div class="notification-stat"><strong>{{ cost_totals.input_tokens + cost_totals.output_tokens }}</strong><span>input + output tokens</span></div>
+    </section>
+    <section class="notification-section">
+      <h2>Daily history</h2>
+      <div class="health-table-wrap"><table class="activity-table"><thead><tr><th>Day</th><th>Cost</th><th>Requests</th><th>Input</th><th>Cached</th><th>Output</th><th>Relative cost</th></tr></thead><tbody>
+        {% for row in cost_daily %}<tr><td>{{ row.day }}</td><td>${{ '%.6f'|format(row.cost) }}</td><td>{{ row.request_count }}</td><td>{{ row.input_tokens }}</td><td>{{ row.cached_tokens }}</td><td>{{ row.output_tokens }}</td><td><meter min="0" max="{{ maximum_daily_cost or 1 }}" value="{{ row.cost }}">{{ row.cost }}</meter></td></tr>{% else %}<tr><td colspan="7">No AI costs are stored for this period.</td></tr>{% endfor %}
+      </tbody></table></div>
+    </section>
+    <section class="notification-section">
+      <h2>By model and task</h2>
+      <div class="health-table-wrap"><table class="activity-table"><thead><tr><th>Model</th><th>Operation</th><th>Requests</th><th>Cost</th><th>Input</th><th>Cached</th><th>Output</th></tr></thead><tbody>
+        {% for row in cost_models %}<tr><td>{{ row.model }}</td><td>{{ ai_task_label(row.prompt_version) }}</td><td>{{ row.request_count }}</td><td>${{ '%.6f'|format(row.cost) }}</td><td>{{ row.input_tokens }}</td><td>{{ row.cached_tokens }}</td><td>{{ row.output_tokens }}</td></tr>{% else %}<tr><td colspan="7">No model usage is stored.</td></tr>{% endfor %}
+      </tbody></table></div>
+    </section>
+    <section class="notification-section">
+      <h2>Request history</h2>
+      <div class="health-table-wrap"><table class="activity-table"><thead><tr><th>Started</th><th>Status</th><th>Model</th><th>Operation</th><th>Items</th><th>Tokens</th><th>Cost</th><th>Detail</th></tr></thead><tbody>
+        {% for run in cost_runs %}<tr><td>{{ display_timestamp(run.started_at) }}</td><td>{{ run.status }}</td><td>{{ run.model }}</td><td>{{ ai_task_label(run.prompt_version) }}</td><td>{{ run.submitted_items }}</td><td>{{ run.input_tokens + run.output_tokens }}{% if run.cached_input_tokens %} ({{ run.cached_input_tokens }} cached){% endif %}</td><td>${{ '%.6f'|format(run.estimated_cost_usd) }}</td><td>{{ display_ai_error(run.error) if run.error else '—' }}</td></tr>{% else %}<tr><td colspan="8">No AI request has been stored.</td></tr>{% endfor %}
+      </tbody></table></div>
+    </section>
+  </main>
+</body>
+</html>

@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: distillfeed
+    runtime: docker
+    healthCheckPath: /healthz
+    envVars:
+      - key: RSSREADER_CONFIG
+        value: /var/data/config.toml
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: RSSREADER_PASSWORD
+        sync: false
+      - key: DISTILLFEED_AUTH_ENABLED
+        value: "true"
+    disk:
+      name: distillfeed-data
+      mountPath: /var/data
+      sizeGB: 1

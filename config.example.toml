@@ -1,0 +1,113 @@
+# Copy this file to config.toml. Relative paths are resolved from config.toml.
+
+[plugins]
+enabled = ""
+arxiv_digest_enabled = false
+
+[app]
+mode = "local" # private loopback mode; use production only behind a configured reverse proxy
+database_path = "data/reader.sqlite3"
+working_opml_path = "data/subscriptions.opml"
+# Optional local path or HTTPS URL imported on `distillfeed init` and `distillfeed import-opml`.
+opml_source = ""
+starter_subscriptions = true
+host = "127.0.0.1"
+port = 8080
+trusted_hosts = "127.0.0.1,localhost"
+debug = false
+log_level = "INFO"
+auto_refresh_on_load = true
+background_scheduler_enabled = false
+refresh_interval_minutes = 30
+auto_summarize_after_refresh = false
+summary_language = "English"
+interest_profile = "Programming, open source, artificial intelligence, science, and technology."
+retention_days = 0 # 0 keeps entries indefinitely
+
+[feeds]
+timeout_seconds = 20
+max_response_bytes = 10485760
+max_entries_per_feed_update = 200
+initial_import_max_entries_per_feed = 20
+initial_import_max_age_days = 30
+max_workers = 8
+max_workers_per_host = 2
+user_agent = "DistillFeed/0.22.0 (+private single-user feed reader)"
+allow_private_urls = false
+# Optional server-admin-controlled drop directory for generated://name.xml feeds.
+# DistillFeed reads regular feed files from this directory but never executes
+# generator code. See docs/CUSTOM_FEEDS.md; do not expose this as a script upload.
+generated_feed_directory = ""
+retry_base_minutes = 15
+retry_max_hours = 24
+
+[llm]
+enabled = true
+provider = "openai" # or "ollama"
+api_key_env = "OPENAI_API_KEY"
+base_url = "http://127.0.0.1:11434/v1/"
+model = "gpt-5.4-nano"
+reasoning_effort = "none"
+automatic_cooldown_minutes = 30
+# Human-facing cycle size: focused (80), balanced (200), or wide (500).
+# A cycle safely spans several provider requests when necessary.
+review_workload = "balanced"
+max_entries_total = 160 # safety cap for one provider request, maximum 200
+max_entries_per_feed = 20
+max_description_chars = 1500
+max_input_chars = 400000
+max_output_tokens = 16000
+candidate_max_age_days = 30
+minimum_relevance = 70
+maximum_summary_items = 25
+rolling_digest_hours = 24
+estimated_output_tokens_per_item = 120
+estimated_output_tokens_per_group = 250
+output_token_safety_margin = 1000
+# Local guard across ordinary and arXiv requests. 0 means unlimited. This is
+# tracked from DistillFeed's stored token usage; it is not provider balance.
+monthly_budget_usd = 0.0
+
+# USD per one million tokens. Update these values if provider pricing changes.
+[llm.pricing]
+input = 0.20
+cached_input = 0.02
+output = 1.25
+
+[auth]
+# Prefer Apache Basic Auth for deployments. Application Basic Auth is useful
+# when running without Apache. Keep the password outside TOML.
+enabled = false
+username = "reader"
+password_env = "RSSREADER_PASSWORD"
+
+[ui]
+dark_mode = false
+groups_expanded_by_default = false
+offline_cache_enabled = false
+completion_notifications = false
+subscription_font_size = 14
+item_font_size = 14
+summary_font_size = 16
+
+[weather]
+enabled = true
+language = "English"
+location_name = "Paris"
+latitude = 48.8566
+longitude = 2.3522
+timezone = "Europe/Paris"
+refresh_minutes = 15
+
+[notifications.ntfy]
+# Optional outbound article alerts for phones and other ntfy clients. These are
+# separate from DistillFeed's persistent System notices. Source-specific rules
+# and thresholds are managed in Settings → Other devices and stored in SQLite.
+enabled = false
+server_url = "https://ntfy.sh"
+topic = ""
+token_env = "NTFY_TOKEN"
+minimum_relevance = 85
+max_items_per_summary = 5
+priority = "high"
+timeout_seconds = 10

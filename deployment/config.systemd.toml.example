@@ -1,0 +1,17 @@
+[app]
+mode = "production"
+database_path = "/var/lib/rssreader/reader.sqlite3"
+working_opml_path = "/var/lib/rssreader/subscriptions.opml"
+host = "127.0.0.1"
+port = 8080
+# Enable this in Settings for a schedule owned by the running web service.
+# Leave it off when using rssreader-refresh.timer instead.
+background_scheduler_enabled = false
+refresh_interval_minutes = 30
+auto_summarize_after_refresh = false
+
+[auth]
+# Prefer Apache Basic Auth. Set enabled=true only for application-level auth.
+enabled = false
+username = "reader"
+password_env = "RSSREADER_PASSWORD"

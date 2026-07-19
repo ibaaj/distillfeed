@@ -1,0 +1,13 @@
+{
+  "name": "DistillFeed",
+  "short_name": "DistillFeed",
+  "description": "Your feeds, distilled",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#181a1d",
+  "theme_color": "#315f9c",
+  "icons": [
+    {"src": "/static/distillfeed-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}
+  ]
+}

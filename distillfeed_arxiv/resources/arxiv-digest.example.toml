@@ -1,0 +1,69 @@
+[app]
+title = "arXiv Digest"
+user_agent = "DistillFeed arXiv digest (configure a contact address before heavy use)"
+
+[arxiv]
+categories = ["cs.AI"]
+initial_lookback_days = 1
+resume_overlap_minutes = 90
+rss_pause_seconds = 5.0
+api_pause_seconds = 5.0
+api_page_size = 100
+api_backfill_enabled = true
+api_interval_hours = 20
+
+[filters]
+preferred_authors = []
+blocked_authors_exact = []
+positive_keywords_strong = [
+  "machine learning",
+  "artificial intelligence",
+  "software engineering",
+]
+positive_keywords_medium = [
+  "reasoning",
+  "programming",
+  "open source",
+]
+positive_keywords_weak = []
+negative_keywords = []
+broad_candidate_threshold = 0
+local_keep_threshold = 6
+local_weight = 1.0
+llm_weight = 0.35
+final_keep_threshold = 25
+category_bonus = ""
+category_bonus_points = 0
+cross_category_bonuses = []
+cross_category_bonus_points = 0
+no_signal_penalty = 0
+category_bridge_bonus = 0
+
+[llm]
+enabled = true
+api_key_env = "OPENAI_API_KEY"
+model = "gpt-5.4-nano"
+api = "responses"
+max_candidates = 100
+ranking_batch_size = 20
+estimated_output_tokens_per_paper = 40
+max_digest_input_chars = 150000
+input_price_per_million = 0.20
+output_price_per_million = 1.25
+system_prompt = """
+Rank papers for the reader using the configured categories, authors, and
+keywords. Prefer substantive technical contributions and clear relevance.
+Be strict, explain each score briefly, and do not infer interests that are
+not present in the configuration.
+"""
+
+[notifications.ntfy]
+enabled = false
+server_url = "https://ntfy.sh"
+topic = ""
+token_env = "ARXIV_NTFY_TOKEN"
+minimum_llm_score = 88
+max_items_per_digest = 5
+priority = "high"
+timeout_seconds = 10
+send_on_manual_refresh = false

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<opml version="2.0">
+  <head><title>DistillFeed starter subscriptions</title></head>
+  <body>
+    <outline text="Programming" title="Programming">
+      <outline type="rss" text="GitHub Blog" title="GitHub Blog" xmlUrl="https://github.blog/feed/" htmlUrl="https://github.blog/"/>
+      <outline type="rss" text="Python Insider" title="Python Insider" xmlUrl="https://blog.python.org/feeds/posts/default?alt=rss" htmlUrl="https://blog.python.org/"/>
+      <outline type="atom" text="Simon Willison" title="Simon Willison" xmlUrl="https://simonwillison.net/atom/everything/" htmlUrl="https://simonwillison.net/"/>
+      <outline type="rss" text="Mozilla Hacks" title="Mozilla Hacks" xmlUrl="https://hacks.mozilla.org/feed/" htmlUrl="https://hacks.mozilla.org/"/>
+    </outline>
+    <outline text="Artificial intelligence" title="Artificial intelligence">
+      <outline type="rss" text="OpenAI" title="OpenAI" xmlUrl="https://openai.com/news/rss.xml" htmlUrl="https://openai.com/news/"/>
+      <outline type="rss" text="Anthropic News" title="Anthropic News" xmlUrl="https://news.google.com/rss/search?q=site%3Aanthropic.com%2Fnews&amp;hl=en-US&amp;gl=US&amp;ceid=US%3Aen" htmlUrl="https://www.anthropic.com/news"/>
+      <outline type="rss" text="Google DeepMind" title="Google DeepMind" xmlUrl="https://deepmind.google/blog/rss.xml" htmlUrl="https://deepmind.google/blog/"/>
+      <outline type="rss" text="Hugging Face" title="Hugging Face" xmlUrl="https://huggingface.co/blog/feed.xml" htmlUrl="https://huggingface.co/blog"/>
+      <outline type="rss" text="Google AI" title="Google AI" xmlUrl="https://blog.google/technology/ai/rss/" htmlUrl="https://blog.google/technology/ai/"/>
+    </outline>
+    <outline text="Science and technology" title="Science and technology">
+      <outline type="rss" text="Nature" title="Nature" xmlUrl="https://www.nature.com/nature.rss" htmlUrl="https://www.nature.com/"/>
+      <outline type="rss" text="NASA" title="NASA" xmlUrl="https://www.nasa.gov/rss/dyn/breaking_news.rss" htmlUrl="https://www.nasa.gov/"/>
+    </outline>
+  </body>
+</opml>

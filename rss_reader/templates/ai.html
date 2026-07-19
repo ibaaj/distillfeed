@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="csrf-token" content="{{ csrf_token() }}">
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='distillfeed-icon.svg', v='0.22.0') }}">
+  <title>AI summaries · DistillFeed</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='0.22.0') }}">
+</head>
+<body class="summaries-page ai-policy-page{% if ui.dark_mode %} dark-mode{% endif %}" data-job-running="{{ 'true' if 'summary-update' in locks or 'llm-summary' in locks or 'feed-refresh' in locks else 'false' }}">
+  <header class="topbar page-header">
+    <a class="brand" href="/">← DistillFeed</a>
+    <strong class="page-title">AI summaries{% if selected_scope_title %} · {{ selected_scope_title }}{% endif %}</strong>
+    <nav class="page-actions" aria-label="AI summary pages">
+      <a class="button-link" href="/summaries">Latest summaries</a>
+      <button id="ai-save" class="button-link primary-page-action" type="submit" form="ai-config-form" disabled>Save changes</button>
+    </nav>
+  </header>
+  <main class="ai-policy-shell">
+    <nav class="ai-policy-nav" aria-label="AI summary settings">
+      <p>AI summaries</p>
+      <button class="active" data-ai-panel="overview" type="button"><span>?</span><span><strong>How it works</strong><small>Actions and next update</small></span><b>›</b></button>
+      <button data-ai-panel="queue" type="button"><span>≡</span><span><strong>Waiting entries</strong><small>{{ queue.counts.ready }} ready</small></span><b>›</b></button>
+      <button data-ai-panel="sources" type="button"><span>☷</span><span><strong>Sources</strong><small>Mode and priority</small></span><b>›</b></button>
+      <button data-ai-panel="automation" type="button"><span>↻</span><span><strong>Automation</strong><small>Server schedule</small></span><b>›</b></button>
+      <button data-ai-panel="profile" type="button"><span>Aa</span><span><strong>Model & writing</strong><small>Provider, language, interests</small></span><b>›</b></button>
+      {% if arxiv_available %}<button data-ai-panel="arxiv" type="button"><span>α</span><span><strong>arXiv daily digest</strong><small>{{ 'Separate daily workflow' if arxiv_enabled else 'Off · optional specialist workflow' }}</small></span><b>›</b></button>{% endif %}
+      <button data-ai-panel="advanced" type="button"><span>•••</span><span><strong>Advanced</strong><small>Request safeguards</small></span><b>›</b></button>
+    </nav>
+
+    {% macro arxiv_input(field) %}
+      <label class="settings-field{% if field.widget is defined and field.widget == 'textarea' %} settings-field-wide{% endif %}"><span>{{ field.label }}</span>
+      {% if field.options is defined %}<select data-config-path="{{ field.path }}" data-type="str">{% for option in field.options %}<option value="{{ option }}" {% if field.value == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select>
+      {% elif field.type == 'bool' %}<input class="settings-switch" data-config-path="{{ field.path }}" data-type="bool" type="checkbox" role="switch" {% if field.value %}checked{% endif %}>
+      {% elif field.widget is defined and field.widget == 'textarea' %}<textarea data-config-path="{{ field.path }}" data-type="str" rows="{{ field.rows or 5 }}">{{ field.value }}</textarea>
+      {% elif field.type in ('int','float') %}<input data-config-path="{{ field.path }}" data-type="{{ field.type }}" type="number" step="{% if field.type == 'float' %}any{% else %}1{% endif %}" value="{{ field.value }}">
+      {% else %}<input data-config-path="{{ field.path }}" data-type="str" value="{{ field.value }}">{% endif %}</label>
+    {% endmacro %}
+
+    <form id="ai-config-form" class="ai-policy-content">
+      <p id="ai-status" class="settings-status" role="status" aria-live="polite"></p>
+
+      <section class="ai-policy-panel active" data-ai-content="overview">
+        <header><h1>{% if selected_scope_title %}Update “{{ selected_scope_title }}”{% else %}How AI summaries work{% endif %}</h1><p>Two actions have two distinct effects. The labels below are the same labels used throughout DistillFeed.</p></header>
+        {% if readiness.blockers or readiness.warnings %}<aside class="ai-readiness ai-readiness-{{ readiness.status }}" role="{{ 'alert' if readiness.blockers else 'status' }}">
+          <strong>{{ 'AI update is blocked' if readiness.blockers else 'AI update needs attention' }}</strong>
+          {% for issue in readiness.blockers + readiness.warnings %}<p>{{ issue.message }} {% if issue.action_url %}<a href="{{ issue.action_url }}">{{ issue.action_label or 'Review settings' }}</a>{% endif %}</p>{% endfor %}
+          <small>Estimated update cost: ${{ '%.4f'|format(readiness.budget.projected_update_usd) }} · Local month estimate: ${{ '%.4f'|format(readiness.budget.month_spend_usd) }}. Provider account balance is not available to DistillFeed.</small>
+        </aside>{% endif %}
+        <ol class="ai-pipeline ai-workflow" aria-label="AI summary workflow">
+          <li><span>1</span><div><strong>Check feeds · no AI</strong><small>Reads RSS and Atom documents and stores new feed entries. Linked webpages are not opened.</small></div></li>
+          <li><span>2</span><div><strong>Update summaries · uses AI</strong><small>Checks feeds, evaluates a visible selection of entries that have not succeeded before, then publishes new summaries for the affected selections.</small></div></li>
+        </ol>
+        <div class="ai-stats">
+          <div><strong>{{ queue.counts.ready }}</strong><span>ready</span></div>
+          <div><strong>{{ queue.counts.processing }}</strong><span>in progress</span></div>
+          <div><strong>{{ queue.counts.retry }}</strong><span>retry later</span></div>
+          <div><strong>{{ queue.counts.on_request }}</strong><span>only on request</span></div>
+          <div><strong>{{ queue.counts.disabled }}</strong><span>AI off</span></div>
+          <div><strong>{{ queue.counts.expired }}</strong><span>outside age limit</span></div>
+          <div><strong>{{ queue.counts.excluded }}</strong><span>excluded by you</span></div>
+        </div>
+        <section class="ai-next-plan" aria-labelledby="next-update-title">
+          <div><h2 id="next-update-title">Next update{% if selected_scope_title %} for {{ selected_scope_title }}{% endif %}</h2><p><strong>{{ plan.selected_count }}</strong> of <strong>{{ plan.ready_count }}</strong> ready entries will be evaluated. The evaluation stage is expected to use {{ plan.estimated_requests }} model request{% if plan.estimated_requests != 1 %}s{% endif %}; publishing each affected summary uses one additional request.</p></div>
+          <dl><div><dt>Workload</dt><dd>{{ workload|capitalize }} · up to {{ workload_limit }}</dd></div><div><dt>Summary threshold</dt><dd>{{ llm.minimum_relevance }}/100</dd></div><div><dt>Model</dt><dd>{{ llm.model }}</dd></div></dl>
+        </section>
+        {% if plan.deferred_count %}<aside class="ai-explanation"><strong>{{ plan.deferred_count }} ready entries will remain waiting</strong><span>They are not discarded. A later update continues from the stored queue, while source balancing prevents one busy group from taking every place.</span></aside>{% endif %}
+        <aside class="ai-explanation"><strong>Safe transitions</strong><span>The settings shown here are frozen when an update starts. Changes apply to the next update. Stop keeps completed evaluations, returns unsent entries to the queue, and leaves any unfinished summary unchanged.</span></aside>
+        <aside class="ai-explanation"><strong>Each entry is evaluated once</strong><span>After a successful evaluation, its score and explanation are reused. Changing the model, language or interests affects entries evaluated from then on; it does not silently spend money rescoring the archive. Current writing and threshold settings are used when a summary is rebuilt.</span></aside>
+        {% if recent_runs %}<aside class="ai-last-run"><span><strong>Last model request</strong><small>{{ recent_runs[0].status|capitalize }} · {{ ai_task_label(recent_runs[0].prompt_version) }} · {{ recent_runs[0].submitted_items }} entries · ${{ '%.4f'|format(recent_runs[0].estimated_cost_usd) }}</small></span><a href="/costs">Cost history</a></aside>{% endif %}
+        <button id="ai-run-now" type="button" class="ai-run-button" data-static-disabled="{{ 'false' if readiness.can_start else 'true' }}" {% if not readiness.can_start or 'summary-update' in locks or 'llm-summary' in locks or 'feed-refresh' in locks %}disabled{% endif %}>{% if selected_scope_title %}Update this summary{% else %}Update ordinary summaries{% endif %}</button>
+      </section>
+
+      <section class="ai-policy-panel" data-ai-content="queue">
+        <header><h1>Waiting entries</h1><p>Ready entries may be sent by the next automatic or global update. Entries that require a direct source update, never use AI, or fall outside the age limit are hidden by default. You can exclude any entry before it is sent.</p></header>
+        <div class="ai-queue-tools" id="ai-queue-filter">
+          {% if selected_group_id %}<input type="hidden" name="group_id" value="{{ selected_group_id }}">{% endif %}{% if selected_feed_id %}<input type="hidden" name="feed_id" value="{{ selected_feed_id }}">{% endif %}
+          <input name="q" id="ai-queue-search" type="search" value="{{ queue_query }}" placeholder="Search waiting entries">
+          <select name="queue_view" id="ai-queue-state"><option value="ready" {% if queue_view == 'ready' %}selected{% endif %}>Ready</option><option value="processing" {% if queue_view == 'processing' %}selected{% endif %}>In progress</option><option value="retry" {% if queue_view == 'retry' %}selected{% endif %}>Retry later</option><option value="on_request" {% if queue_view == 'on_request' %}selected{% endif %}>Only on request</option><option value="disabled" {% if queue_view == 'disabled' %}selected{% endif %}>AI off</option><option value="expired" {% if queue_view == 'expired' %}selected{% endif %}>Outside age limit</option><option value="excluded" {% if queue_view == 'excluded' %}selected{% endif %}>Excluded by me</option><option value="all" {% if queue_view == 'all' %}selected{% endif %}>All states</option></select>
+          <label class="ai-inactive-toggle"><input name="include_inactive" value="1" type="checkbox" {% if include_inactive %}checked{% endif %}> Include non-automatic entries in the Ready view</label><button id="ai-queue-apply" type="button">Apply</button>
+        </div>
+        <div class="ai-queue-list">
+          {% for item in queue['items'] %}<article data-item-id="{{ item.item_id }}" data-queue-state="{{ item.display_state }}">
+            <span class="queue-state queue-state-{{ item.display_state }}">{{ item.display_state|replace('_',' ') }}</span>
+            <div><strong>{{ item.title }}</strong><small>{{ item.group_title }} · {{ item.feed_title }} · {{ item.published_at or item.discovered_at }}</small>{% if item.inactive_reason %}<small>{{ item.inactive_reason }}</small>{% endif %}{% if item.last_error %}<em>{{ item.last_error }}</em>{% endif %}</div>
+            <button class="ai-entry-disposition" type="button" data-disposition="{{ 'default' if item.display_state == 'excluded' else 'excluded' }}">{{ 'Restore' if item.display_state == 'excluded' else 'Exclude' }}</button>
+          </article>{% else %}<p class="empty">No entries match this view.</p>{% endfor %}
+        </div>
+        {% if queue_page_count > 1 %}<nav class="ai-pagination" aria-label="Waiting entry pages"><span>Page {{ queue_page }} of {{ queue_page_count }}</span>{% set scope_query %}{% if selected_group_id %}&group_id={{ selected_group_id }}{% elif selected_feed_id %}&feed_id={{ selected_feed_id }}{% endif %}{% endset %}{% if queue_page > 1 %}<a href="?queue_page={{ queue_page - 1 }}&queue_view={{ queue_view }}&q={{ queue_query }}{{ scope_query }}{% if include_inactive %}&include_inactive=1{% endif %}#queue">Previous</a>{% endif %}{% if queue_page < queue_page_count %}<a href="?queue_page={{ queue_page + 1 }}&queue_view={{ queue_view }}&q={{ queue_query }}{{ scope_query }}{% if include_inactive %}&include_inactive=1{% endif %}#queue">Next</a>{% endif %}</nav>{% endif %}
+      </section>
+
+      <section class="ai-policy-panel" data-ai-content="sources" id="sources">
+        <header><h1>Sources</h1><p><strong>Automatic</strong> joins global and scheduled updates. <strong>Only on request</strong> runs only when you update that group or feed. <strong>Never use AI</strong> keeps its entries out of model requests. Priority divides a bounded workload fairly between automatic groups.</p></header>
+        <div class="ai-source-list">
+          {% for group in groups %}<article class="ai-source-row ai-source-group{% if selected_group_id == group.id %} focused{% endif %}" data-source-kind="groups" data-source-id="{{ group.id }}">
+            <div><strong>{{ group.title }}</strong><small>Group · {{ group.pending_count }} waiting{% if group.effective_mode != group.ai_mode %} · Effective: {{ 'Only on request' if group.effective_mode == 'manual' else 'Never use AI' }} because of its parent{% endif %}</small></div>
+            <label><span>Use AI</span><select data-source-field="ai_mode"><option value="automatic" {% if group.ai_mode == 'automatic' %}selected{% endif %}>Automatic</option><option value="manual" {% if group.ai_mode == 'manual' %}selected{% endif %}>Only on request</option><option value="off" {% if group.ai_mode == 'off' %}selected{% endif %}>Never use AI</option></select></label>
+            <label><span>Priority</span><select data-source-field="ai_priority"><option value="high" {% if group.ai_priority == 'high' %}selected{% endif %}>High</option><option value="normal" {% if group.ai_priority not in ('high','low') %}selected{% endif %}>Normal</option><option value="low" {% if group.ai_priority == 'low' %}selected{% endif %}>Low</option></select></label>
+            <label><span>Automatic interval</span><select data-source-field="summary_interval_hours">{% for value,label in ((0,'Every scheduled update'),(1,'At most hourly'),(6,'At most every 6 hours'),(12,'At most every 12 hours'),(24,'At most daily'),(168,'At most weekly')) %}<option value="{{ value }}" {% if group.summary_interval_hours == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+            <label><span>Maximum entries</span><input data-source-field="summary_item_budget" type="number" min="0" max="1000" value="{{ group.summary_item_budget }}"><small>0 = workload decides</small></label><button class="ai-source-save" type="button" disabled>Save</button>
+          </article>{% endfor %}
+          {% for feed in ai_feeds %}<article class="ai-source-row ai-source-feed{% if selected_feed_id == feed.id %} focused{% endif %}" data-source-kind="feeds" data-source-id="{{ feed.id }}">
+            <div><strong>{{ feed.title }}</strong><small>Feed in {{ feed.group_title }} · {{ feed.pending_count }} waiting{% if feed.effective_mode != feed.ai_mode and feed.ai_mode != 'inherit' %} · Parent policy takes precedence{% endif %}</small></div>
+            <label><span>Use AI</span><select data-source-field="ai_mode"><option value="inherit" {% if feed.ai_mode == 'inherit' %}selected{% endif %}>Follow group</option><option value="automatic" {% if feed.ai_mode == 'automatic' %}selected{% endif %}>Automatic</option><option value="manual" {% if feed.ai_mode == 'manual' %}selected{% endif %}>Only on request</option><option value="off" {% if feed.ai_mode == 'off' %}selected{% endif %}>Never use AI</option></select></label><button class="ai-source-save" type="button" disabled>Save</button>
+          </article>{% endfor %}
+        </div>
+      </section>
+
+      <section class="ai-policy-panel" data-ai-content="automation">
+        <header><h1>Automation</h1><p>The server schedule works while the browser is closed. At each due time it checks feeds. If AI updates are enabled below, it then evaluates ready entries, publishes affected summaries, and finally sends duplicate-safe ntfy device alerts.</p></header>
+        {% if arxiv_available %}<aside class="ai-explanation"><strong>arXiv stays separate</strong><span>When the arXiv daily digest is enabled, the same scheduled cycle checks it independently. Its model runs only when a new arXiv announcement is waiting, and it publishes at most one combined digest for that announcement.</span></aside>{% endif %}
+        <div class="settings-grid ai-settings-group">
+          <label class="settings-field"><span>Server schedule</span><input class="settings-switch" data-config-path="app.background_scheduler_enabled" data-type="bool" type="checkbox" role="switch" {% if app.background_scheduler_enabled %}checked{% endif %}></label>
+          <label class="settings-field"><span>Update summaries after checking feeds</span><input class="settings-switch" data-config-path="app.auto_summarize_after_refresh" data-type="bool" type="checkbox" role="switch" {% if app.auto_summarize_after_refresh %}checked{% endif %}></label>
+          <label class="settings-field"><span>Run every</span><select data-config-path="app.refresh_interval_minutes" data-type="int">{% for value,label in ((15,'15 minutes'),(30,'30 minutes'),(60,'1 hour'),(180,'3 hours'),(360,'6 hours'),(720,'12 hours'),(1440,'1 day')) %}<option value="{{ value }}" {% if app.refresh_interval_minutes == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+        </div>
+      </section>
+
+      <section class="ai-policy-panel" data-ai-content="profile">
+        <header><h1>Model & writing</h1><p>These settings govern ordinary feed summaries. New settings are frozen at the start of the next update. Successful existing scores are retained; only the summary composition is rebuilt from current eligible evidence. The separate arXiv digest has its own recipe.</p></header>
+        <div class="settings-grid ai-settings-group">
+          <label class="settings-field"><span>AI summaries</span><input class="settings-switch" data-config-path="llm.enabled" data-type="bool" type="checkbox" role="switch" {% if llm.enabled %}checked{% endif %}></label>
+          <label class="settings-field"><span>Provider</span><select id="ai-provider" data-config-path="llm.provider" data-type="str"><option value="openai" {% if llm.provider == 'openai' %}selected{% endif %}>OpenAI</option><option value="ollama" {% if llm.provider == 'ollama' %}selected{% endif %}>Ollama</option></select></label>
+          <label class="settings-field"><span><strong>Model</strong><small>Nano costs less; Mini generally produces more nuanced prose.</small></span><input data-config-path="llm.model" data-type="str" list="recommended-models" value="{{ llm.model }}"><datalist id="recommended-models"><option value="gpt-5.4-nano"><option value="gpt-5.4-mini"></datalist></label>
+          <label class="settings-field"><span><strong>API key environment variable</strong><small>The key itself is never stored in DistillFeed.</small></span><input data-config-path="llm.api_key_env" data-type="str" value="{{ llm.api_key_env }}"></label>
+          <label class="settings-field ollama-only"><span>Ollama API URL</span><input data-config-path="llm.base_url" data-type="str" value="{{ llm.base_url }}"></label>
+          <label class="settings-field"><span>Writing language</span><select data-config-path="app.summary_language" data-type="str"><option value="English" {% if app.summary_language == 'English' %}selected{% endif %}>English</option><option value="French" {% if app.summary_language == 'French' %}selected{% endif %}>Français</option></select></label>
+          <label class="settings-field settings-field-wide"><span>Topics and interests</span><textarea data-config-path="app.interest_profile" data-type="str" rows="5">{{ app.interest_profile }}</textarea></label>
+          <label class="settings-field"><span>Workload per update</span><select data-config-path="llm.review_workload" data-type="str"><option value="focused" {% if workload == 'focused' %}selected{% endif %}>Focused · up to 80</option><option value="balanced" {% if workload == 'balanced' %}selected{% endif %}>Balanced · up to 200</option><option value="wide" {% if workload == 'wide' %}selected{% endif %}>Wide · up to 500</option></select></label>
+          <label class="settings-field"><span>Include articles scoring at least (0–100)</span><input data-config-path="llm.minimum_relevance" data-type="int" type="number" min="0" max="100" value="{{ llm.minimum_relevance }}"></label>
+          <label class="settings-field"><span>Maximum entries in one summary</span><input data-config-path="llm.maximum_summary_items" data-type="int" type="number" min="1" max="200" value="{{ llm.maximum_summary_items }}"></label>
+        </div>
+      </section>
+
+      {% if arxiv_available %}<section class="ai-policy-panel" data-ai-content="arxiv">
+        <header><h1>arXiv daily digest</h1><p>This optional specialist workflow is separate from ordinary feed summaries. A feed check collects the selected arXiv categories and performs local screening without AI. DistillFeed invokes its ranking model and publishes one combined digest only when a new arXiv announcement day is waiting.</p></header>
+        <div class="settings-grid ai-settings-group"><label class="settings-field"><span><strong>arXiv daily digest</strong><small>Enabling creates its dedicated sources without adding them to the ordinary AI queue.</small></span><input class="settings-switch" data-config-path="plugins.arxiv_digest_enabled" data-type="bool" type="checkbox" role="switch" {% if arxiv_enabled %}checked{% endif %}></label></div>
+        <div class="ai-stats ai-arxiv-stats"><div><strong>{{ arxiv_state.get('pending_announcement','—') }}</strong><span>waiting announcement</span></div><div><strong>{{ arxiv_state.get('last_digest_announcement','—') }}</strong><span>last published digest</span></div></div>
+        {% if arxiv_last_run and arxiv_last_run.status == 'failed' %}<aside class="ai-explanation ai-error"><strong>The last arXiv AI update failed</strong><span>{{ arxiv_last_run.error or 'The provider request failed.' }} The shortlist is preserved and Retry daily digest will continue from it.</span></aside>{% endif %}
+        <aside class="ai-explanation"><strong>One announcement, one digest</strong><span>cs.AI, cs.LG, cs.LO—or the categories you choose—are locally shortlisted together, ranked with the personal arXiv recipe, and published as one daily result. Ordinary source priorities and the ordinary waiting queue do not alter this digest.</span></aside>
+        <div class="settings-grid ai-settings-group">{% for field in arxiv_fields if field.common %}{{ arxiv_input(field) }}{% endfor %}</div>
+        <details class="advanced-settings"><summary>Ranking recipe and retrieval safeguards</summary><p class="help">These personal controls affect only the specialist daily digest.</p><div class="settings-grid ai-settings-group">{% for field in arxiv_fields if not field.common %}{{ arxiv_input(field) }}{% endfor %}</div></details>
+        {% if arxiv_enabled and (arxiv_readiness.blockers or arxiv_readiness.warnings) %}<aside class="ai-readiness ai-readiness-{{ arxiv_readiness.status }}" role="{{ 'alert' if arxiv_readiness.blockers else 'status' }}"><strong>{{ 'arXiv digest is blocked' if arxiv_readiness.blockers else 'arXiv digest needs attention' }}</strong>{% for issue in arxiv_readiness.blockers + arxiv_readiness.warnings %}<p>{{ issue.message }} {% if issue.action_url %}<a href="{{ issue.action_url }}">{{ issue.action_label or 'Review settings' }}</a>{% endif %}</p>{% endfor %}</aside>{% endif %}
+        <div class="ai-page-links"><button id="arxiv-run-now" class="ai-run-button" data-static-disabled="{{ 'false' if arxiv_enabled and arxiv_readiness.can_start else 'true' }}" type="button" {% if not arxiv_enabled or not arxiv_readiness.can_start or 'summary-update' in locks or 'llm-summary' in locks or 'feed-refresh' in locks %}disabled{% endif %}>{{ 'Update daily digest' if arxiv_enabled else 'Enable and save to update' }}</button><button id="arxiv-ntfy-test" data-static-disabled="{{ 'false' if arxiv_enabled else 'true' }}" type="button" {% if not arxiv_enabled %}disabled{% endif %}>Send test arXiv device alert</button></div>
+      </section>{% endif %}
+
+      <section class="ai-policy-panel" data-ai-content="advanced">
+        <header><h1>Advanced safeguards</h1><p>These limits divide one visible update plan into safe provider requests. They do not silently discard the rest of the queue.</p></header>
+        <div class="settings-grid ai-settings-group">
+          <label class="settings-field"><span>Entries per evaluation request</span><input data-config-path="llm.max_entries_total" data-type="int" type="number" min="1" max="200" value="{{ llm.max_entries_total }}"></label>
+          <label class="settings-field"><span>Entries from one feed per request</span><input data-config-path="llm.max_entries_per_feed" data-type="int" type="number" min="1" max="200" value="{{ llm.max_entries_per_feed }}"></label>
+          <label class="settings-field"><span>Unscored candidate age limit (days)</span><input data-config-path="llm.candidate_max_age_days" data-type="int" type="number" min="0" value="{{ llm.candidate_max_age_days }}"></label>
+          <label class="settings-field"><span>Ordinary summary evidence window (hours)</span><input data-config-path="llm.rolling_digest_hours" data-type="int" type="number" min="1" value="{{ llm.rolling_digest_hours }}"></label>
+          <label class="settings-field"><span>Maximum input characters</span><input data-config-path="llm.max_input_chars" data-type="int" type="number" min="1000" value="{{ llm.max_input_chars }}"></label>
+          <label class="settings-field"><span>Maximum output tokens</span><input data-config-path="llm.max_output_tokens" data-type="int" type="number" min="1000" value="{{ llm.max_output_tokens }}"></label>
+          <label class="settings-field"><span><strong>Local monthly budget (USD)</strong><small>0 disables the local guard. This is based on stored cost estimates, not provider balance.</small></span><input data-config-path="llm.monthly_budget_usd" data-type="float" type="number" min="0" step="0.01" value="{{ llm.monthly_budget_usd }}"></label>
+          <label class="settings-field"><span>Reasoning effort</span><select data-config-path="llm.reasoning_effort" data-type="str">{% for value in ('none','minimal','low','medium','high','xhigh') %}<option value="{{ value }}" {% if llm.reasoning_effort == value %}selected{% endif %}>{{ value|capitalize }}</option>{% endfor %}</select></label>
+        </div>
+      </section>
+    </form>
+  </main>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="{{ url_for('static', filename='ai.js', v='0.22.0') }}" defer></script>
+</body>
+</html>

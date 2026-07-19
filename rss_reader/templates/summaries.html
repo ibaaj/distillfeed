@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='distillfeed-icon.svg', v='0.22.0') }}"><title>Latest summaries · DistillFeed</title><link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='0.22.0') }}"></head>
+<body class="summaries-page{% if ui.dark_mode %} dark-mode{% endif %}">
+  <header class="topbar page-header"><a class="brand" href="/">← DistillFeed</a><strong class="page-title">Latest summaries</strong><nav class="page-actions" aria-label="Summary page actions"><button id="print-summaries" class="button-link" type="button" aria-label="Print or save summaries as PDF">Print / PDF</button></nav></header>
+  <main class="all-summaries">
+    {% for block in summaries %}<section class="summary-card">
+      <header><h1>{{ block.summary.group_title }}</h1><span>{{ display_timestamp(block.summary.completed_at) }} · {{ block.summary.model }}</span></header>
+      {% if block.summary.changes %}<p class="summary-changes"><strong>New since the previous summary:</strong> {{ block.summary.changes }}</p>{% endif %}
+      {% if block.merged_summary_count > 1 %}<p class="muted">Rolling view combining {{ block.merged_summary_count }} recent summaries.</p>{% endif %}
+      {% if block.sections %}<div class="digest-sections">{% for section in block.sections %}<section><h3>{{ section.heading }}</h3><p>{{ section.body }}</p></section>{% endfor %}</div>{% endif %}
+      <div class="story-clusters">{% for cluster in block.clusters %}<section class="story-cluster"><h2>{{ cluster.label }}</h2><div class="cluster-score">Highest relevance {{ cluster.importance }}/100 · {{ cluster['items']|length }} source{% if cluster['items']|length != 1 %}s{% endif %}</div><ul>{% for item in cluster['items'] %}{% set safe_url = safe_external_url(item.url) %}<li><h3>{% if safe_url %}<a href="{{ safe_url }}" target="_blank" rel="noopener noreferrer">{{ item.title }}</a>{% else %}{{ item.title }}{% endif %}</h3><div class="summary-feed">{{ item.feed_title }} · {{ item.importance }}/100</div><p>{{ item.description }}</p>{% if item.justification %}<p class="justification"><strong>Why relevant:</strong> {{ item.justification }}</p>{% endif %}</li>{% endfor %}</ul></section>{% endfor %}</div>
+    </section>{% else %}<p class="empty">No active summaries are available.</p>{% endfor %}
+  </main><script src="{{ url_for('static', filename='summary.js', v='0.22.0') }}" defer></script>
+</body></html>

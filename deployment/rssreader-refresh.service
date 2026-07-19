@@ -1,0 +1,18 @@
+[Unit]
+Description=Refresh DistillFeed feeds
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=rssreader
+Group=rssreader
+WorkingDirectory=/opt/distillfeed
+Environment=RSSREADER_CONFIG=/etc/rssreader/config.toml
+EnvironmentFile=-/etc/rssreader/secrets.env
+ExecStart=/opt/distillfeed/.venv/bin/distillfeed refresh --automatic
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/rssreader /etc/rssreader

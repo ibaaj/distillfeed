@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "distillfeed"
+version = "0.22.0"
+description = "DistillFeed: a private RSS/Atom reader with ranked AI summaries"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = [
+  "Flask>=3.0,<4",
+  "defusedxml>=0.7,<1",
+  "feedparser>=6.0,<7",
+  "openai>=1.68,<3",
+  "requests>=2.31,<3",
+  "tzdata>=2024.1",
+]
+
+[project.optional-dependencies]
+server = ["gunicorn>=22,<24"]
+test = ["pytest>=8,<10"]
+
+[project.scripts]
+distillfeed = "rss_reader.cli:main"
+rssreader = "rss_reader.cli:main"
+
+[project.entry-points."distillfeed.plugins"]
+arxiv_digest = "distillfeed_arxiv.plugin:plugin"
+
+[tool.setuptools.packages.find]
+include = ["rss_reader*", "distillfeed_arxiv*"]
+
+[tool.setuptools.package-data]
+rss_reader = ["templates/*.html", "static/*.css", "static/*.js", "static/*.svg", "static/*.webmanifest", "resources/*.opml"]
+distillfeed_arxiv = ["resources/*.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

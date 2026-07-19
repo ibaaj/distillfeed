@@ -1,0 +1,11 @@
+# Optional shared-hosting alternative. The Apache administrator must enable
+# AllowOverride AuthConfig FileInfo, mod_auth_basic, mod_rewrite, and mod_proxy.
+# Prefer the virtual-host example when you control the server.
+AuthType Basic
+AuthName "Private RSS reader"
+AuthUserFile /absolute/path/outside/webroot/rssreader.htpasswd
+Require valid-user
+
+RewriteEngine On
+RewriteRule ^(.*)$ http://127.0.0.1:8080/$1 [P,L]
+

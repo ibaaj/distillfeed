@@ -1,0 +1,17 @@
+.git
+.venv
+__pycache__
+*.pyc
+*.egg-info
+.pytest_cache
+.distillfeed
+data
+backups
+config.toml
+config.toml.bak
+arxiv-digest.toml
+arxiv-digest.toml.bak
+secrets.env
+tests
+*.sqlite3
+*.tar.gz

@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="csrf-token" content="{{ csrf_token() }}">
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='distillfeed-icon.svg', v='0.22.0') }}">
+  <title>System notices · DistillFeed</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='0.22.0') }}">
+</head>
+<body class="summaries-page{% if ui.dark_mode %} dark-mode{% endif %}">
+  <header class="topbar page-header">
+    <a class="brand" href="/">← DistillFeed</a>
+    <strong class="page-title">System notices</strong>
+    <nav class="page-actions" aria-label="System notice page links"><a class="button-link" href="/?settings=notifications">Device alerts</a><a class="button-link" href="/costs">AI costs</a></nav>
+  </header>
+  <main class="notifications-page">
+    <p class="page-intro">DistillFeed’s operational notices and activity history. Outbound alerts sent to other devices through ntfy are shown separately below.</p>
+
+    <section class="notification-section" id="active-notices">
+      <h2>Active system notices</h2>
+      <ul class="notification-list issue-list">
+        {% for issue in issues %}<li class="issue-{{ issue.severity }}" data-issue-row="{{ issue.id }}"><span><strong>{{ issue.title }}</strong><small>{{ issue.message }}</small></span>{% if issue.action_url %}<a class="button-link" href="{{ issue.action_url }}">{{ issue.action_label or 'Review' }}</a>{% endif %}<button class="button-link issue-dismiss" type="button" data-issue-id="{{ issue.id }}">Dismiss</button></li>
+        {% else %}<li><strong>No unresolved operational notice needs attention.</strong></li>{% endfor %}
+      </ul>
+    </section>
+
+    <section class="notification-section">
+      <h2>System notice lifecycle</h2>
+      <div class="health-table-wrap"><table class="activity-table"><thead><tr><th>Last seen</th><th>Notice</th><th>State</th><th>Occurrences</th></tr></thead><tbody>
+        {% for issue in issue_history %}<tr><td>{{ display_timestamp(issue.last_seen_at) }}</td><td><strong>{{ issue.title }}</strong><br><small>{{ issue.message }}</small></td><td>{{ 'Active' if issue.active and not issue.acknowledged_at else 'Acknowledged' if issue.active else 'Resolved' }}</td><td>{{ issue.occurrences }}</td></tr>{% else %}<tr><td colspan="4">No notice has been recorded.</td></tr>{% endfor %}
+      </tbody></table></div>
+    </section>
+
+    <section class="notification-summary" aria-label="Current health summary">
+      <div class="notification-stat"><strong>{{ backlog_count }}</strong><span>entries ready for AI</span></div>
+      <div class="notification-stat"><strong>{{ feed_errors|length }}</strong><span>feeds with a current retrieval error</span></div>
+      <div class="notification-stat"><strong>{{ retry_count }}</strong><span>entries waiting to retry</span></div>
+      <div class="notification-stat"><strong>{{ push_failure_count }}</strong><span>ntfy device-delivery failures</span></div>
+    </section>
+
+    <section class="notification-section" id="scheduler-health">
+      <h2>Background schedule</h2>
+      {% if background_scheduler_enabled %}<p class="page-intro">The server runs every {{ refresh_interval_minutes }} minute{% if refresh_interval_minutes != 1 %}s{% endif %}. It checks feeds first{% if auto_summarize_after_refresh %}, updates summaries second, and sends eligible ntfy alerts last{% endif %}.</p><ul class="notification-list"><li><strong>Next scheduled check: {{ display_timestamp(scheduler_next_at) if scheduler_next_at else 'being initialized' }}</strong>{% if scheduler_last_status %}<small>Last cycle: {{ scheduler_last_status }} · {{ display_timestamp(scheduler_last_at) }}</small>{% endif %}</li></ul>
+      {% else %}<p class="page-intro">Server-side refresh is off. Browser scheduling may still run while the reader is open.</p>{% endif %}
+    </section>
+
+    <section class="notification-section" id="ai-capacity">
+      <h2>AI summary activity</h2>
+      <p class="page-intro">The complete waiting list, next update plan and source priorities are available in <a href="/ai#queue">AI summaries</a>.</p>
+      {% if latest_llm and latest_llm.status == 'failed' %}
+        <ul class="notification-list"><li class="notification-error"><strong>The latest AI run failed.</strong><small>{{ display_ai_error(latest_llm.error) if latest_llm.error else 'No provider detail was stored.' }}</small></li></ul>
+      {% elif latest_llm and latest_llm.error %}
+        <ul class="notification-list"><li class="notification-warning"><strong>The latest AI run was incomplete.</strong><small>{{ display_ai_error(latest_llm.error) }}</small></li></ul>
+      {% endif %}
+      <ul class="notification-list">
+        {% for group in backlog %}
+          <li><a href="/ai?group_id={{ group.group_id }}#queue"><strong>{{ group.group_title }}</strong></a><small>{{ group.item_count }} entr{% if group.item_count == 1 %}y is{% else %}ies are{% endif %} ready for an AI update.</small></li>
+        {% else %}
+          <li><strong>No eligible items are currently waiting.</strong></li>
+        {% endfor %}
+      </ul>
+    </section>
+
+    <section class="notification-section" id="ai-sources">
+      <h2>Sources not used automatically</h2>
+      <ul class="notification-list">
+        {% for group in paused_groups %}<li class="notification-warning"><strong>{{ group.title }} · {{ 'Only on request' if group.ai_mode == 'manual' else 'Never use AI' }}</strong><small>Its feed entries remain readable.</small></li>{% endfor %}
+        {% for feed in paused_feeds %}<li class="notification-warning"><a href="/?feed={{ feed.id }}"><strong>{{ feed.title }} · {{ 'Only on request' if feed.ai_mode == 'manual' else 'Never use AI' }}</strong></a><small>{{ feed.group_title }} · The feed remains readable.</small></li>{% endfor %}
+        {% for feed in inherited_paused_feeds %}<li class="notification-warning"><a href="/?feed={{ feed.id }}"><strong>Feed inherited an exclusion: {{ feed.title }}</strong></a><small>Its own switch is enabled, but {{ feed.group_title }} or an ancestor group is excluded.</small></li>{% endfor %}
+        {% if not paused_groups and not paused_feeds %}<li><strong>Every subscription source follows automatic AI updates.</strong></li>{% endif %}
+      </ul>
+    </section>
+
+    <section class="notification-section" id="feed-errors">
+      <h2>Feed retrieval health</h2>
+      <ul class="notification-list">
+        {% if latest_refresh and latest_refresh.status == 'partial' %}<li class="notification-warning"><strong>The latest refresh updated {{ latest_refresh.feeds_succeeded }} of {{ latest_refresh.feeds_attempted }} feeds.</strong><small>Previously stored articles remain available for feeds that could not be updated.</small></li>
+        {% elif latest_refresh and latest_refresh.status == 'failed' %}<li class="notification-error"><strong>The latest refresh failed.</strong><small>{{ latest_refresh.error or 'No failure detail was stored.' }}</small></li>{% endif %}
+        {% for feed in feed_errors %}
+          <li class="notification-error"><a href="/?feed={{ feed.id }}"><strong>{{ feed.title }}</strong></a> · {{ feed.group_title }}{% if feed.last_http_status %} · HTTP {{ feed.last_http_status }}{% endif %}<small>{{ feed.xml_url }}</small><small>{{ feed.last_error }}</small></li>
+        {% else %}
+          <li><strong>No feed currently has a stored retrieval error.</strong></li>
+        {% endfor %}
+      </ul>
+    </section>
+
+    <section class="notification-section" id="device-alerts">
+      <h2>Alerts sent to other devices with ntfy</h2>
+      {% if ntfy.enabled %}<p class="page-intro">ntfy sends up to {{ ntfy.max_items_per_summary }} newly selected item{% if ntfy.max_items_per_summary != 1 %}s{% endif %} after automatic summaries. {% if ntfy_scope.mode == 'all' %}All ordinary feeds use the default {{ ntfy.minimum_relevance }}/100 threshold.{% else %}Only sources matching one of {{ ntfy_scope.rule_count }} selected group/feed rule{% if ntfy_scope.rule_count != 1 %}s{% endif %} can send; feed rules override the nearest group rule.{% endif %} Each item is claimed once for this destination.</p>
+      {% else %}<p class="page-intro">Sending alerts to other devices is off. Configure <a href="/?settings=notifications">Other devices</a> when you want selected high-relevance entries delivered through ntfy.</p>{% endif %}
+      <ul class="notification-list">
+        {% for delivery in push_deliveries %}{% set safe_url = safe_external_url(delivery.url) %}<li class="{% if delivery.status == 'failed' %}notification-error{% endif %}">{% if safe_url %}<a href="{{ safe_url }}" target="_blank" rel="noopener noreferrer"><strong>{{ delivery.title }}</strong></a>{% else %}<strong>{{ delivery.title or 'Deleted item' }}</strong>{% endif %}<small>{{ delivery.feed_title or 'Source unavailable' }} · relevance {{ delivery.relevance }}/100 · {% if delivery.delivery_channel == 'arxiv' %}arXiv digest device rule{% else %}{{ delivery.policy_label or 'Legacy global rule' }} threshold {{ delivery.minimum_relevance if delivery.minimum_relevance is not none else ntfy.minimum_relevance }}/100{% endif %} · {{ delivery.status }} · {{ display_timestamp(delivery.delivered_at or delivery.attempted_at) }}</small>{% if delivery.error %}<small>{{ delivery.error }}</small>{% endif %}</li>
+        {% else %}<li><strong>No ntfy device alert has been attempted.</strong></li>{% endfor %}
+      </ul>
+    </section>
+
+    <section class="notification-section">
+      <h2 id="operations">User operations</h2>
+      <div class="health-table-wrap"><table class="activity-table"><thead><tr><th>Started</th><th>Action</th><th>Scope</th><th>Status</th><th>Result</th></tr></thead><tbody>
+        {% for operation in operations %}<tr><td>{{ display_timestamp(operation.started_at or operation.created_at) }}</td><td>{{ operation.kind|capitalize }}</td><td>{{ operation.scope_kind }}{% if operation.scope_id %} {{ operation.scope_id }}{% endif %}</td><td>{{ operation.state }}</td><td>{{ operation.message }}</td></tr>{% else %}<tr><td colspan="5">No browser operation has been stored.</td></tr>{% endfor %}
+      </tbody></table></div>
+    </section>
+
+    <section class="notification-section">
+      <h2>Recent refresh activity</h2>
+      <div class="health-table-wrap"><table class="activity-table"><thead><tr><th>Completed</th><th>Status</th><th>Feeds</th><th>New items</th><th>Detail</th></tr></thead><tbody>
+        {% for run in refresh_runs %}<tr><td>{{ display_timestamp(run.completed_at or run.started_at) }}</td><td>{{ run.status }}</td><td>{{ run.feeds_succeeded }}/{{ run.feeds_attempted }}</td><td>{{ run.new_items }}</td><td>{{ run.error or '—' }}</td></tr>{% else %}<tr><td colspan="5">No refresh run has been stored.</td></tr>{% endfor %}
+      </tbody></table></div>
+    </section>
+
+    <section class="notification-section">
+      <h2>Recent AI activity</h2>
+      <div class="health-table-wrap"><table class="activity-table"><thead><tr><th>Completed</th><th>Stage</th><th>Status</th><th>Submitted</th><th>Detail</th></tr></thead><tbody>
+        {% for run in llm_runs %}<tr><td>{{ display_timestamp(run.completed_at or run.started_at) }}</td><td>{{ ai_task_label(run.prompt_version) }}</td><td>{{ run.status }}</td><td>{{ run.submitted_items }}</td><td>{{ display_ai_error(run.error) if run.error else '—' }}</td></tr>{% else %}<tr><td colspan="5">No AI request has been stored.</td></tr>{% endfor %}
+      </tbody></table></div>
+    </section>
+  </main>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="{{ url_for('static', filename='notifications.js', v='0.22.0') }}" defer></script>
+</body>
+</html>

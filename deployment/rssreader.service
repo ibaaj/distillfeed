@@ -1,0 +1,24 @@
+[Unit]
+Description=DistillFeed web service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rssreader
+Group=rssreader
+WorkingDirectory=/opt/distillfeed
+Environment=RSSREADER_CONFIG=/etc/rssreader/config.toml
+Environment=DISTILLFEED_MODE=production
+EnvironmentFile=-/etc/rssreader/secrets.env
+ExecStart=/opt/distillfeed/.venv/bin/gunicorn --workers 1 --threads 8 --timeout 300 --bind 127.0.0.1:8080 rss_reader.wsgi:app
+Restart=on-failure
+RestartSec=5
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/rssreader /etc/rssreader
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Set up DistillFeed</title>
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='distillfeed-icon.svg') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='setup.css') }}">
+</head>
+<body data-default-profile="{{ default_profile }}">
+  <header class="setup-header">
+    <div class="setup-brand" aria-label="DistillFeed setup">
+      <img src="{{ url_for('static', filename='distillfeed-icon.svg') }}" alt="" width="28" height="28">
+      <span>DistillFeed</span>
+    </div>
+    <span class="private-badge"><span aria-hidden="true">●</span> Private local setup</span>
+    <button id="cancel-setup" class="quiet-button" type="button">Cancel setup</button>
+  </header>
+
+  <main id="top" class="setup-main">
+    <div id="global-status" class="status-banner" role="status" aria-live="polite" hidden></div>
+
+    <section class="setup-screen starting-screen" data-screen="starting" aria-labelledby="starting-title">
+      <div class="progress-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+      <h1 id="starting-title">Opening your private setup</h1>
+      <p>Checking the one-time link and preparing the choices. Nothing outside this computer is contacted.</p>
+    </section>
+
+    <section class="setup-screen welcome-screen" data-screen="welcome" aria-labelledby="welcome-title" hidden>
+      <div class="eyebrow">First launch</div>
+      <h1 id="welcome-title">Make DistillFeed yours</h1>
+      <p class="lede">Start safely in one minute, or review every choice. Both paths show a final review before creating the reader.</p>
+
+      <aside id="demo-introduction" class="demo-callout" hidden>
+        <div>
+          <strong>Demo profile selected</strong>
+          <p>Port 8081, starter feeds, a score threshold of 40, seven days of ordinary summary evidence, and a seven-day first arXiv retrieval. You will add your own OpenAI API key before review.</p>
+        </div>
+        <button id="start-demo" class="primary-button" type="button">Configure the demo</button>
+      </aside>
+
+      <div class="path-grid">
+        <article class="path-card recommended-card">
+          <span class="recommendation">Recommended</span>
+          <h2>Use safe starting settings</h2>
+          <p>A local reader with public starter feeds. AI, arXiv, weather, background updates, and alerts to other devices start off.</p>
+          <ul class="plain-checks">
+            <li>Available only on this computer</li>
+            <li>No API key needed</li>
+            <li>No network request during setup</li>
+          </ul>
+          <button id="use-recommended" class="primary-button" type="button">Review recommended settings</button>
+        </article>
+
+        <article class="path-card">
+          <h2>Choose settings carefully</h2>
+          <p>Walk through subscriptions, AI summaries, arXiv, updates, weather, and optional ntfy alerts one section at a time.</p>
+          <ul class="plain-checks">
+            <li>Clear explanations for every cost-related choice</li>
+            <li>Back and forward without losing entries</li>
+            <li>Sensitive values stay in this private local setup session</li>
+          </ul>
+          <button id="use-guided" class="secondary-button" type="button">Choose settings</button>
+        </article>
+      </div>
+
+      <div class="setup-guarantee compact-guarantee">
+        <strong>Setup only prepares local files.</strong>
+        <span>It does not check feeds, call an AI model, fetch arXiv, look up weather, test ntfy, or spend money.</span>
+      </div>
+    </section>
+
+    <section class="setup-screen wizard-screen" data-screen="wizard" aria-labelledby="wizard-title" hidden>
+      <header class="screen-heading">
+        <div>
+          <div class="eyebrow">Guided setup</div>
+          <h1 id="wizard-title">Choose how your reader works</h1>
+        </div>
+        <span id="step-counter" class="step-counter" aria-live="polite">Step 1 of 4</span>
+      </header>
+
+      <div class="wizard-layout">
+        <nav class="step-navigation" aria-label="Setup sections">
+          <button type="button" data-go-step="0" aria-current="step"><span>1</span><span><strong>Reader</strong><small>Access and feeds</small></span></button>
+          <button type="button" data-go-step="1"><span>2</span><span><strong>AI summaries</strong><small>Model and limits</small></span></button>
+          <button type="button" data-go-step="2"><span>3</span><span><strong>arXiv</strong><small>Optional daily digest</small></span></button>
+          <button type="button" data-go-step="3"><span>4</span><span><strong>Services</strong><small>Updates and alerts</small></span></button>
+          <div class="review-step"><span>✓</span><span><strong>Review</strong><small>Nothing applied yet</small></span></div>
+        </nav>
+
+        <form id="setup-form" class="setup-form" novalidate>
+          <div id="form-error" class="form-error" role="alert" tabindex="-1" hidden></div>
+
+          <section class="form-step" data-step="0" aria-labelledby="reader-step-title">
+            <div class="section-introduction">
+              <h2 id="reader-step-title">Reader</h2>
+              <p>Choose the address on this computer and what appears on first open.</p>
+            </div>
+
+            <fieldset class="choice-fieldset">
+              <legend>Starting subscriptions</legend>
+              <label class="choice-card">
+                <input type="radio" name="subscriptions" value="starter">
+                <span><strong>Public starter feeds</strong><small>Programming, open source, AI, science, and technology. Remove or replace them later.</small></span>
+              </label>
+              <label class="choice-card">
+                <input type="radio" name="subscriptions" value="empty">
+                <span><strong>Empty reader</strong><small>Start without subscriptions and import OPML or add feeds after launch.</small></span>
+              </label>
+            </fieldset>
+
+            <div class="field-grid two-columns">
+              <label class="field" for="port">
+                <span>Reader port</span>
+                <input id="port" name="port" type="number" min="1024" max="65535" step="1" inputmode="numeric" required>
+                <small>Your reader will use <code>http://127.0.0.1:port</code>. Setup checks that the port is free.</small>
+              </label>
+              <label class="field" for="language">
+                <span>Summary and weather language</span>
+                <select id="language" name="language">
+                  <option value="English">English</option>
+                  <option value="French">French</option>
+                </select>
+                <small>Used when AI writes summaries and weather text.</small>
+              </label>
+            </div>
+
+            <label class="switch-field" for="refresh_on_open">
+              <input id="refresh_on_open" name="refresh_on_open" type="checkbox" role="switch">
+              <span><strong>Check feeds when I open DistillFeed</strong><small>Feed checks do not use AI. Linked webpages are not opened.</small></span>
+            </label>
+          </section>
+
+          <section class="form-step" data-step="1" aria-labelledby="ai-step-title" hidden>
+            <div class="section-introduction">
+              <h2 id="ai-step-title">AI summaries</h2>
+              <p>AI is optional. Before model work starts, DistillFeed shows readiness, the waiting queue, the request estimate, and its local cost guard.</p>
+            </div>
+
+            <fieldset class="choice-fieldset horizontal-choices">
+              <legend>AI provider</legend>
+              <label class="choice-card compact-choice">
+                <input type="radio" name="ai_provider" value="disabled">
+                <span><strong>Configure later</strong><small>No AI requests.</small></span>
+              </label>
+              <label class="choice-card compact-choice">
+                <input type="radio" name="ai_provider" value="openai">
+                <span><strong>OpenAI</strong><small>Uses your API key.</small></span>
+              </label>
+              <label class="choice-card compact-choice">
+                <input type="radio" name="ai_provider" value="ollama">
+                <span><strong>Local Ollama</strong><small>Your local API.</small></span>
+              </label>
+            </fieldset>
+
+            <div class="conditional-panel" data-provider-panel="openai" hidden>
+              <label class="field" for="openai_key">
+                <span>OpenAI API key</span>
+                <input id="openai_key" name="openai_key" type="password" autocomplete="new-password" spellcheck="false">
+                <small>The key is sent only to the local setup server. It is never returned to this page.</small>
+              </label>
+              <label id="environment-key-option" class="switch-field compact-switch" for="use_environment_openai_key">
+                <input id="use_environment_openai_key" name="use_environment_openai_key" type="checkbox">
+                <span><strong>Use OPENAI_API_KEY from this terminal</strong><small id="environment-key-status">Setup will check whether the variable is available.</small></span>
+              </label>
+              <label class="switch-field compact-switch" for="store_openai_key">
+                <input id="store_openai_key" name="store_openai_key" type="checkbox">
+                <span><strong>Store the key for later launches</strong><small>Saved in DistillFeed’s private local secret file with owner-only permissions. Turn this off to use it for this launch only.</small></span>
+              </label>
+            </div>
+
+            <div class="conditional-panel" data-provider-panel="ollama" hidden>
+              <label class="field" for="ollama_url">
+                <span>Ollama-compatible API address</span>
+                <input id="ollama_url" name="ollama_url" type="url" inputmode="url" spellcheck="false">
+                <small>Setup saves this address but does not contact it.</small>
+              </label>
+            </div>
+
+            <div class="field-grid two-columns" data-ai-settings>
+              <label class="field" for="model">
+                <span>Model name</span>
+                <input id="model" name="model" type="text" maxlength="200" spellcheck="false">
+              </label>
+              <label class="field" for="review_workload">
+                <span>Entries evaluated per update</span>
+                <select id="review_workload" name="review_workload">
+                  <option value="focused">Focused · up to 80</option>
+                  <option value="balanced">Balanced · up to 200</option>
+                  <option value="wide">Wide · up to 500</option>
+                </select>
+              </label>
+            </div>
+
+            <label class="field" for="interest_profile" data-ai-settings>
+              <span>What interests you</span>
+              <textarea id="interest_profile" name="interest_profile" rows="3" maxlength="2000"></textarea>
+              <small>Used to evaluate relevance. Describe subjects you want prioritized, not secret information.</small>
+            </label>
+
+            <div class="meaning-grid" data-ai-settings>
+              <label class="field meaning-field" for="summary_threshold">
+                <span>Include articles scoring at least</span>
+                <div class="number-with-unit"><input id="summary_threshold" name="summary_threshold" type="number" min="0" max="100" step="1" inputmode="numeric"><b>/100</b></div>
+                <small>The relevance score needed for an ordinary summary. This does not control how old an article may be.</small>
+              </label>
+              <label class="field meaning-field" for="summary_window_days">
+                <span>Ordinary summary evidence window</span>
+                <div class="number-with-unit"><input id="summary_window_days" name="summary_window_days" type="number" min="1" max="365" step="1" inputmode="numeric"><b>days</b></div>
+                <small>When rebuilding an ordinary summary, use qualifying articles published in the previous number of days.</small>
+              </label>
+              <label class="field meaning-field" for="candidate_age_days">
+                <span>Unscored candidate age limit</span>
+                <div class="number-with-unit"><input id="candidate_age_days" name="candidate_age_days" type="number" min="0" max="3650" step="1" inputmode="numeric"><b>days</b></div>
+                <small>Articles older than this are not sent for their first relevance evaluation. This is separate from the summary evidence window.</small>
+              </label>
+            </div>
+
+            <label class="field budget-field" for="monthly_budget_usd" data-ai-settings>
+              <span>Monthly local AI spending guard</span>
+              <div class="number-with-unit prefix-unit"><b>$</b><input id="monthly_budget_usd" name="monthly_budget_usd" type="number" min="0" max="10000" step="0.01" inputmode="decimal"></div>
+              <small>0 means no local guard. This is not an account balance and cannot see provider credits.</small>
+            </label>
+          </section>
+
+          <section class="form-step" data-step="2" aria-labelledby="arxiv-step-title" hidden>
+            <div class="section-introduction">
+              <h2 id="arxiv-step-title">arXiv daily digest</h2>
+              <p>A separate specialist workflow for new arXiv announcements. It is not an ordinary RSS group and has its own retrieval window and final threshold.</p>
+            </div>
+
+            <label class="switch-field feature-switch" for="arxiv_enabled">
+              <input id="arxiv_enabled" name="arxiv_enabled" type="checkbox" role="switch" aria-controls="arxiv-settings" aria-expanded="false">
+              <span><strong>Enable arXiv daily digest</strong><small>Currently requires OpenAI. No arXiv or AI request happens during setup.</small></span>
+            </label>
+
+            <div id="arxiv-settings" class="conditional-panel" data-arxiv-settings hidden>
+              <label class="field" for="arxiv_categories">
+                <span>arXiv categories</span>
+                <input id="arxiv_categories" name="arxiv_categories" type="text" maxlength="500" spellcheck="false" placeholder="cs.AI, cs.LG">
+                <small>Use category codes separated by commas. Up to 20 categories.</small>
+              </label>
+
+              <div class="field-grid two-columns">
+                <label class="field meaning-field" for="arxiv_lookback_days">
+                  <span>On first update, retrieve the previous</span>
+                  <div class="number-with-unit"><input id="arxiv_lookback_days" name="arxiv_lookback_days" type="number" min="1" max="365" step="1" inputmode="numeric"><b>days</b></div>
+                  <small>This first-retrieval backfill prevents an empty weekend demo. Later updates continue from the last completed retrieval.</small>
+                </label>
+                <label class="field meaning-field" for="arxiv_final_threshold">
+                  <span>Keep arXiv papers scoring at least</span>
+                  <div class="number-with-unit"><input id="arxiv_final_threshold" name="arxiv_final_threshold" type="number" min="0" max="100" step="1" inputmode="numeric"><b>/100</b></div>
+                  <small>This threshold belongs only to the arXiv digest.</small>
+                </label>
+              </div>
+
+              <aside class="information-note">
+                <strong>Weekends and announcement gaps</strong>
+                <p>arXiv normally has no new daily announcement on Saturday or Sunday. The first-retrieval window is deliberately separate so a new demo can retrieve recent weekday papers.</p>
+              </aside>
+            </div>
+          </section>
+
+          <section class="form-step" data-step="3" aria-labelledby="services-step-title" hidden>
+            <div class="section-introduction">
+              <h2 id="services-step-title">Updates and optional services</h2>
+              <p>These choices take effect only while the DistillFeed server is running. Setup does not contact any service.</p>
+            </div>
+
+            <div class="setting-group">
+              <h3>Server updates</h3>
+              <label class="switch-field" for="background_updates">
+                <input id="background_updates" name="background_updates" type="checkbox" role="switch" aria-controls="background-settings" aria-expanded="false">
+                <span><strong>Check feeds on a server schedule</strong><small>Works while DistillFeed remains running. This is off in the recommended and demo profiles.</small></span>
+              </label>
+              <label id="background-settings" class="field narrow-field" for="refresh_interval_minutes" data-background-settings hidden>
+                <span>Minutes between scheduled feed checks</span>
+                <input id="refresh_interval_minutes" name="refresh_interval_minutes" type="number" min="15" max="10080" step="1" inputmode="numeric">
+              </label>
+              <label class="switch-field compact-switch" for="auto_summarize">
+                <input id="auto_summarize" name="auto_summarize" type="checkbox">
+                <span><strong>Update AI summaries after automatic feed checks</strong><small>Applies to checks while the reader is open and server-scheduled checks. May spend money without a button press; requires AI and respects the local spending guard.</small></span>
+              </label>
+            </div>
+
+            <div class="setting-group">
+              <h3>Weather in the header</h3>
+              <label class="switch-field" for="weather_enabled">
+                <input id="weather_enabled" name="weather_enabled" type="checkbox" role="switch" aria-controls="weather-settings" aria-expanded="false">
+                <span><strong>Show weather</strong><small>Weather is fetched only when the reader runs, never during setup.</small></span>
+              </label>
+              <div id="weather-settings" class="conditional-panel" data-weather-settings hidden>
+                <label class="field" for="weather_location"><span>Location label</span><input id="weather_location" name="weather_location" type="text" maxlength="120"></label>
+                <div class="field-grid three-columns">
+                  <label class="field" for="weather_latitude"><span>Latitude</span><input id="weather_latitude" name="weather_latitude" type="number" min="-90" max="90" step="any" inputmode="decimal"></label>
+                  <label class="field" for="weather_longitude"><span>Longitude</span><input id="weather_longitude" name="weather_longitude" type="number" min="-180" max="180" step="any" inputmode="decimal"></label>
+                  <label class="field" for="weather_timezone"><span>Time zone</span><input id="weather_timezone" name="weather_timezone" type="text" maxlength="120" spellcheck="false"></label>
+                </div>
+              </div>
+            </div>
+
+            <div class="setting-group notification-group">
+              <h3>Notifications</h3>
+              <div class="notification-distinction">
+                <div><span class="notice-icon system-icon" aria-hidden="true">i</span><p><strong>System notices</strong><small>Shown inside DistillFeed for missing keys, blocked work, queues, failures, and other reader status. They do not require ntfy.</small></p></div>
+                <div><span class="notice-icon device-icon" aria-hidden="true">↗</span><p><strong>Alerts on other devices</strong><small>Optional messages sent through an ntfy server. Feed/group scopes can be personalized later in DistillFeed.</small></p></div>
+              </div>
+
+              <label class="switch-field feature-switch" for="ntfy_enabled">
+                <input id="ntfy_enabled" name="ntfy_enabled" type="checkbox" role="switch" aria-controls="ntfy-settings" aria-expanded="false">
+                <span><strong>Send alerts to other devices with an ntfy server</strong><small>System notices inside DistillFeed stay available whether this is on or off.</small></span>
+              </label>
+              <div id="ntfy-settings" class="conditional-panel" data-ntfy-settings hidden>
+                <div class="field-grid two-columns">
+                  <label class="field" for="ntfy_server"><span>ntfy server address</span><input id="ntfy_server" name="ntfy_server" type="url" inputmode="url" spellcheck="false"></label>
+                  <label class="field" for="ntfy_topic"><span>ntfy topic</span><input id="ntfy_topic" name="ntfy_topic" type="text" maxlength="64" autocomplete="off" spellcheck="false"></label>
+                </div>
+                <div class="field-grid two-columns">
+                  <label class="field meaning-field" for="ntfy_threshold">
+                    <span>Send alerts for scores at least</span>
+                    <div class="number-with-unit"><input id="ntfy_threshold" name="ntfy_threshold" type="number" min="0" max="100" step="1" inputmode="numeric"><b>/100</b></div>
+                    <small>Initial global threshold. Personalize by OPML group or feed after launch.</small>
+                  </label>
+                  <label class="field" for="ntfy_token"><span>ntfy access token (optional)</span><input id="ntfy_token" name="ntfy_token" type="password" autocomplete="new-password" spellcheck="false"><small>Needed only if your server or topic requires it.</small></label>
+                </div>
+                <label class="switch-field compact-switch" for="store_ntfy_token">
+                  <input id="store_ntfy_token" name="store_ntfy_token" type="checkbox">
+                  <span><strong>Store the ntfy token for later launches</strong><small>Saved only in the private local secret file.</small></span>
+                </label>
+              </div>
+            </div>
+          </section>
+
+          <footer class="form-actions">
+            <button id="wizard-back" class="quiet-button" type="button">Back</button>
+            <span class="action-hint">Nothing is saved until you confirm the review.</span>
+            <button id="wizard-next" class="primary-button" type="button">Continue</button>
+          </footer>
+        </form>
+      </div>
+    </section>
+
+    <section class="setup-screen review-screen" data-screen="review" aria-labelledby="review-title" hidden>
+      <header class="screen-heading">
+        <div>
+          <div class="eyebrow">Final review</div>
+          <h1 id="review-title">Ready to create your reader</h1>
+          <p>Read each value below. Setup has not created or contacted anything yet.</p>
+        </div>
+        <span class="review-badge">Not applied</span>
+      </header>
+
+      <div class="review-layout">
+        <dl id="review-list" class="review-list"></dl>
+        <aside class="review-assurance">
+          <h2>What happens next</h2>
+          <ol>
+            <li>Configuration, subscriptions, database, plugin state, and any stored secrets are prepared together in a private staging folder.</li>
+            <li>DistillFeed verifies the complete staged reader.</li>
+            <li>Only a verified reader becomes active. A failure leaves no half-installed reader.</li>
+          </ol>
+          <h3>Setup guarantees</h3>
+          <ul id="review-guarantees" class="plain-checks"></ul>
+        </aside>
+      </div>
+
+      <div class="review-actions">
+        <button id="edit-settings" class="secondary-button" type="button">Edit settings</button>
+        <button id="create-reader" class="primary-button" type="button">Create this reader</button>
+      </div>
+      <p class="confirmation-copy">“Create this reader” writes the reviewed local files. Setup itself makes no external request. After the reader starts, actions you requested—including any automatic actions shown above—can run.</p>
+    </section>
+
+    <section class="setup-screen terminal-screen" data-screen="complete" aria-labelledby="complete-title" hidden>
+      <div class="success-mark" aria-hidden="true">✓</div>
+      <div class="eyebrow">Setup complete</div>
+      <h1 id="complete-title">Your reader is ready</h1>
+      <p>DistillFeed is starting at <strong id="reader-address"></strong>.</p>
+      <a id="open-reader" class="primary-button link-button" href="#">Open DistillFeed</a>
+      <small>If it is still starting, wait a moment and open it again.</small>
+    </section>
+
+    <section class="setup-screen terminal-screen" data-screen="cancelled" aria-labelledby="cancelled-title" hidden>
+      <div class="neutral-mark" aria-hidden="true">—</div>
+      <h1 id="cancelled-title">Setup cancelled</h1>
+      <p>No reader was created. Run <code>./launch.sh</code> whenever you are ready to start again.</p>
+    </section>
+
+    <section class="setup-screen terminal-screen recovery-screen" data-screen="recovery" aria-labelledby="recovery-title" hidden>
+      <div class="error-mark" aria-hidden="true">!</div>
+      <div class="eyebrow">Setup stopped safely</div>
+      <h1 id="recovery-title">Verify the local state before trying again</h1>
+      <p id="recovery-message">DistillFeed could not confirm that its rollback completed. It stopped instead of applying the settings a second time.</p>
+      <div class="recovery-instructions">
+        <strong>Keep this folder unchanged:</strong>
+        <code id="recovery-path">.distillfeed</code>
+        <ol>
+          <li>Do not delete or edit the folder while deciding what to recover.</li>
+          <li>Run <code>./launch.sh</code> again. The launcher will verify any complete reader before starting it and will reject incomplete state.</li>
+          <li>If verification still fails, preserve or back up the folder before inspecting it or asking for help.</li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="setup-screen terminal-screen" data-screen="error" aria-labelledby="error-title" hidden>
+      <div class="error-mark" aria-hidden="true">!</div>
+      <h1 id="error-title">Setup could not continue</h1>
+      <p id="fatal-error-message">Relaunch DistillFeed to open a fresh private setup session.</p>
+    </section>
+  </main>
+
+  <noscript>
+    <div class="noscript-message">This local setup page needs JavaScript to move between steps. No Node.js installation is required; use a browser with JavaScript enabled, then relaunch <code>./launch.sh</code>.</div>
+  </noscript>
+  <script src="{{ url_for('static', filename='setup.js') }}" defer></script>
+</body>
+</html>
