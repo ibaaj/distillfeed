@@ -47,13 +47,8 @@ For the release demo, run:
 ./launch.sh --demo
 ```
 
-The demo starts the guided setup with port 8081, public starter feeds, a summary
-threshold of 40, a seven-day ordinary-summary window, and the arXiv `cs.AI`
-digest with a seven-day first retrieval.
-
 Enter an OpenAI API key during setup if you want the AI and arXiv parts of the
-demo. The key is kept in the local secret store, not in the TOML configuration,
-database, URL or setup manifest. If you do not want to enter a key, turn AI and
+demo. The key is kept in the local secret store. If you do not want to enter a key, turn AI and
 the arXiv digest off during setup; the feed reader still works normally.
 
 ## Feed checks and summaries
