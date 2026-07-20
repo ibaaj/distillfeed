@@ -58,22 +58,12 @@ DistillFeed deliberately keeps these actions separate:
 1. **Check feeds** downloads RSS or Atom documents and stores new entries. It
    does not use AI.
 2. **Update summaries** checks readiness and cost safeguards, evaluates eligible
-   entries, then publishes the affected summaries. This action can use AI.
+   entries, then publishes the affected summaries. This uses AI.
 
-Each update has a durable result. Reloading or closing the browser does not
-erase its status, and an existing summary remains visible until its replacement
-has completed successfully. Previously evaluated entries are not silently
-rescored every time settings change.
 
-Before an AI update starts, the interface reports missing credentials, the
-planned workload, estimated local cost, budget limits, queued work and retryable
-failures. The estimate is based on DistillFeed's own usage records; it is not a
-provider account balance.
+## arXiv daily digest (plugin)
 
-## arXiv daily digest
-
-The bundled arXiv source has its own retrieval, scoring and digest settings inspired by this [project](https://github.com/ibaaj/arxiv-digest). Its first update can look back several days, so a weekend or holiday demo is not
-limited to that day's announcement feed.
+There is an arXiv digest plugin inspired by this [project](https://github.com/ibaaj/arxiv-digest). I
 
 ![DistillFeed arXiv daily digest](docs/images/arxiv-digest.png)
 
