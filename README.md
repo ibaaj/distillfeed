@@ -27,9 +27,7 @@ and run:
 ```
 
 On the first run, DistillFeed creates its own Python environment and opens a
-local setup page. You can accept safe starting settings or review each section.
-Nothing is saved until the final review, and setup does not contact feeds, 
-arXiv, an AI provider or ntfy.
+local setup page. 
 
 ![DistillFeed first-launch setup](docs/images/first-launch.png)
 
@@ -88,9 +86,7 @@ There are two separate notification features:
 - **System notices** explain what DistillFeed itself is doing: completed
   updates, partial feed failures, missing AI configuration, retries, budget
   blocks and similar operational information.
-- **Other devices** sends selected articles to an ntfy server. It is optional
-  and can be limited to chosen OPML groups or feeds, each with its own relevance
-  threshold. A feed rule takes precedence over its group rule.
+- **Other devices** sends selected articles to an ntfy server. 
 
 Configure ntfy under **Settings → Other devices**. System notices do not require
 ntfy and remain available inside the reader.
@@ -98,21 +94,13 @@ ntfy and remain available inside the reader.
 ## Personal generated feeds
 
 DistillFeed can read XML produced by a personal scraper without running that
-scraper inside the web application. Set an administrator-controlled directory:
+scraper inside the web application. Set a directory:
 
 ```toml
 [feeds]
 generated_feed_directory = "/srv/distillfeed/generated-feeds"
 ```
 
-Have the separate collector atomically replace a regular file such as
-`personal.xml`, then add `generated://personal.xml` as a subscription.
-DistillFeed accepts only a basename in this URL, rejects symbolic links and
-oversized files, and parses the result as an ordinary feed.
-
-Do not add a feature that uploads and executes arbitrary Python scripts. Run
-personal collectors as a separate unprivileged process or container with only
-the network and filesystem access they need.
 
 ## Manual installation
 
