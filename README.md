@@ -8,9 +8,9 @@ articles locally, and can use OpenAI or Ollama to score new entries (relevance) 
 
 - RSS and Atom reading with OPML import and export
 - AI relevance scores and concise summaries
-- A separate arXiv daily digest, included with the application
-- Clear status messages for missing credentials, deferred work, retries and AI cost safeguards
-- Per-group and per-feed rules for optional ntfy alerts
+- An arXiv daily digest (plugin), included with the application
+- AI cost safeguards
+- Per-group and per-feed rules for optional notifications alerts with ntfy
 - OpenAI and local Ollama support
 - A guided first launch
 - Local use by default, with Docker and server deployment files included
