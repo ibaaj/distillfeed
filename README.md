@@ -35,7 +35,6 @@ Later, use the same command to start the reader again. If the browser cannot
 open automatically, run `./launch.sh --no-browser` and open the address shown
 in the terminal.
 
-Runtime files are stored in `.distillfeed/` and are ignored by Git.
 
 ## Demo setup
 
@@ -46,8 +45,7 @@ For the release demo, run:
 ```
 
 Enter an OpenAI API key during setup if you want the AI and arXiv parts of the
-demo. The key is kept in the local secret store. If you do not want to enter a key, turn AI and
-the arXiv digest off during setup; the feed reader still works normally.
+demo. 
 
 ## Feed checks and summaries
 
@@ -55,7 +53,7 @@ DistillFeed deliberately keeps these actions separate:
 
 1. **Check feeds** downloads RSS or Atom documents and stores new entries. It
    does not use AI.
-2. **Update summaries** checks readiness and cost safeguards, evaluates eligible
+2. **Update summaries** checks readiness and AI cost safeguards, evaluates eligible
    entries, then publishes the affected summaries. This uses AI.
 
 
@@ -72,8 +70,7 @@ digest.
 ## Subscriptions
 
 Use **Manage** in the subscription panel to add, rename, move, reorder or delete
-groups and feeds. Ordinary-summary rules can be set for either a group or a
-single feed.
+groups and feeds. 
 
 <p align="center">
   <img src="docs/images/subscriptions.png" width="520" alt="DistillFeed subscription management">
@@ -93,8 +90,7 @@ ntfy and remain available inside the reader.
 
 ## Personal generated feeds
 
-DistillFeed can read XML produced by a personal scraper without running that
-scraper inside the web application. Set a directory:
+DistillFeed can read XML produced by a personal scraper. Set a directory:
 
 ```toml
 [feeds]
