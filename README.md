@@ -10,7 +10,7 @@ articles locally, and can use OpenAI or Ollama to score new entries (relevance) 
 - AI relevance scores and concise summaries
 - An arXiv daily digest (plugin), included with the application
 - AI cost safeguards
-- Per-group and per-feed rules for optional notifications alerts with ntfy
+- Per-group and per-feed rules for optional notification alerts with [ntfy](https//ntfy.sh) (can be sent to mobile so)
 - OpenAI and local Ollama support
 - A guided first launch
 - Local use by default, with Docker and server deployment files included
