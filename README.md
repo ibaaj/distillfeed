@@ -157,7 +157,7 @@ Download the new release archive beside `upd.sh`, then run:
 
 ```bash
 chmod +x upd.sh
-./upd.sh --archive ./distillfeed-0.22.0.tar.gz /path/to/your/distillfeed
+./upd.sh --archive ./distillfeed-0.23.0.tar.gz /path/to/your/distillfeed
 ```
 
 The updater checks versions, creates a backup, installs the release, migrates
@@ -174,7 +174,7 @@ python -m pytest
 ```
 
 To verify the downloadable archive, place `test-distillfeed.sh` beside
-`distillfeed-0.22.0.tar.gz` and run:
+`distillfeed-0.23.0.tar.gz` and run:
 
 ```bash
 chmod +x test-distillfeed.sh

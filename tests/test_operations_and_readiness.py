@@ -2,7 +2,7 @@ import json
 import re
 from datetime import UTC, datetime, timedelta
 
-from rss_reader.db import connect, reconcile_interrupted_state, utcnow
+from rss_reader.db import connect, reconcile_interrupted_state, recover_local_process_restart, utcnow
 from rss_reader.ai_queue import sync_review_queue
 from rss_reader.ai_readiness import ordinary_readiness
 from rss_reader.notice_service import synchronize_issues
@@ -177,6 +177,30 @@ def test_startup_reconciles_orphaned_runtime_transitions(configured):
         assert "server restart" in connection.execute(
             "SELECT error FROM llm_runs WHERE request_key='orphan-run'"
         ).fetchone()["error"]
+
+
+def test_local_restart_immediately_releases_previous_process_lease(configured):
+    with connect(configured.database_path) as connection:
+        operation = create_operation(
+            connection, kind="refresh", trigger="browser",
+            lock_name="feed-refresh", lock_owner="previous-process",
+        )
+        connection.execute(
+            "UPDATE app_operations SET state='running' WHERE operation_key=?",
+            (operation["operation_id"],),
+        )
+        connection.execute(
+            """INSERT INTO job_locks(name,owner,acquired_at,expires_at)
+               VALUES('feed-refresh','previous-process',?,datetime('now','+2 hours'))""",
+            (utcnow(),),
+        )
+        recovered = recover_local_process_restart(connection)
+        assert recovered["locks"] == 1
+        assert connection.execute("SELECT COUNT(*) FROM job_locks").fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT state FROM app_operations WHERE operation_key=?",
+            (operation["operation_id"],),
+        ).fetchone()["state"] == "failed"
 
 
 def test_healthcheck_is_minimal_and_available_behind_application_auth(configured, monkeypatch):

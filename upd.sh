@@ -8,7 +8,7 @@ fi
 set -Eeuo pipefail
 umask 077
 
-EXPECTED_VERSION="0.22.0"
+EXPECTED_VERSION="0.23.0"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 DEFAULT_ARCHIVE="$SCRIPT_DIR/distillfeed-$EXPECTED_VERSION.tar.gz"
 
@@ -570,9 +570,6 @@ required_files = {
     "distillfeed/deployment/start.sh",
     "distillfeed/LICENSE",
     "distillfeed/README.md",
-    "distillfeed/SECURITY.md",
-    "distillfeed/MATURITY_AUDIT_0.22.0.md",
-    "distillfeed/docs/CUSTOM_FEEDS.md",
     "distillfeed/tests/test_bundled_arxiv.py",
     "distillfeed/tests/test_launch_lifecycle.py",
     "distillfeed/tests/test_setup_api.py",

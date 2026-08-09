@@ -25,7 +25,7 @@ from werkzeug.serving import WSGIRequestHandler, make_server
 
 from . import __version__
 from .config import Config, load_config
-from .db import connect
+from .db import connect, initialize, recover_local_process_restart
 from .opml import build_tree_from_database, parse_opml_bytes, write_database_opml
 from .secret_store import merged_secret_environment
 from .setup_service import (
@@ -400,6 +400,16 @@ def serve_reader(config_path: Path, *, open_browser: bool = True) -> int:
         raise LaunchError(f"DistillFeed could not start: {exc}") from exc
 
     try:
+        # The launcher lock proves that no previous local DistillFeed process is
+        # alive.  Clear its durable leases before constructing the application.
+        initialize(config.database_path)
+        with connect(config.database_path) as connection:
+            recovered = recover_local_process_restart(connection)
+        if recovered["locks"]:
+            LOGGER.warning(
+                "Recovered %d interrupted update lease(s) from the previous local process",
+                recovered["locks"],
+            )
         app = create_app(str(config_path))
         server.app = app
     except Exception as exc:

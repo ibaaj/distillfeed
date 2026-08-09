@@ -82,7 +82,7 @@ def test_item_details_date_hierarchy_and_portable_exports(configured):
     summaries = client.get("/summaries")
     assert b"Print / PDF" in summaries.data
     assert b'aria-label="Print or save summaries as PDF"' in summaries.data
-    assert b"summary.js?v=0.22.0" in summaries.data
+    assert b"summary.js?v=0.23.0" in summaries.data
 
 
 def test_standalone_page_headers_keep_actions_compact(configured):
@@ -163,6 +163,8 @@ def test_page_and_subscription_mutations(configured, monkeypatch):
     assert b'href="/saved?view=favorites"' in page.data
     assert b'href="/saved?view=read-later"' in page.data
     assert b'href="/saved?view=tags"' in page.data
+    assert b'href="/saved?view=ai-ranked"' in page.data
+    assert b'href="/saved?view=arxiv-ranked"' in page.data
     assert b"DistillFeed" in page.data
     assert b"Paris" in page.data
     assert b"Checkboxes affect LLM summaries only" not in page.data
@@ -219,6 +221,8 @@ def test_page_and_subscription_mutations(configured, monkeypatch):
     )
     assert response.status_code == 201
     assert isinstance(response.get_json()["feed_id"], int)
+    assert response.get_json()["title"] == "A long feed title"
+    assert response.get_json()["parent_id"] == group_id
     with connect(configured.database_path) as connection:
         item_feed = connection.execute("SELECT id FROM feeds WHERE xml_url='https://example.com/rss'").fetchone()[0]
         assert configured.working_opml_path.exists()
@@ -575,7 +579,7 @@ def test_mobile_layers_narrow_pane_controls_and_favicon_are_bounded(configured):
     assert b'class="nav-menu main-menu"' in page.data
     assert b'<span class="toolbar-label">Menu</span>' in page.data
     assert b'class="action-menu scope-actions"' in page.data
-    favicon = b'<link rel="icon" type="image/svg+xml" href="/static/distillfeed-icon.svg?v=0.22.0">'
+    favicon = b'<link rel="icon" type="image/svg+xml" href="/static/distillfeed-icon.svg?v=0.23.0">'
     for path in ("/", "/summaries", "/history", "/health", "/notifications", "/costs", "/saved?view=favorites"):
         response = client.get(path)
         assert response.status_code == 200
