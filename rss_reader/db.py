@@ -607,6 +607,53 @@ def reconcile_interrupted_state(connection: sqlite3.Connection) -> dict[str, int
     return counts
 
 
+def recover_local_process_restart(connection: sqlite3.Connection) -> dict[str, int]:
+    """Release leases left by the previous local launcher process.
+
+    The launcher holds an OS-level exclusive lock for its full lifetime, so when
+    a new launcher reaches this function no earlier local DistillFeed process can
+    still own a database lease.  This is deliberately separate from generic WSGI
+    initialization, where several worker processes may legitimately coexist.
+    """
+    now = utcnow()
+    with transaction(connection, immediate=True):
+        locks = int(connection.execute("SELECT COUNT(*) FROM job_locks").fetchone()[0])
+        connection.execute("DELETE FROM job_locks")
+        operations = connection.execute(
+            """UPDATE app_operations
+               SET state='failed',phase='complete',completed_at=?,
+                   message='The local server restarted before this operation completed',
+                   error='Interrupted by local server restart'
+               WHERE state IN ('queued','running')""",
+            (now,),
+        ).rowcount
+        refresh_runs = connection.execute(
+            """UPDATE refresh_runs SET status='failed',completed_at=?,
+                   error='Interrupted by a local server restart; checking feeds is safe to retry'
+               WHERE status='running'""",
+            (now,),
+        ).rowcount
+        ai_jobs = connection.execute(
+            """UPDATE ai_jobs SET status='failed',stage='interrupted',completed_at=?,
+                   error='Interrupted by a local server restart; completed evaluations were retained'
+               WHERE status='running'""",
+            (now,),
+        ).rowcount
+        llm_runs = connection.execute(
+            """UPDATE llm_runs SET status='failed',completed_at=?,
+                   error='Interrupted by a local server restart; this provider attempt may be retried'
+               WHERE status='running'""",
+            (now,),
+        ).rowcount
+    return {
+        "locks": locks,
+        "operations": max(0, operations),
+        "refresh_runs": max(0, refresh_runs),
+        "ai_jobs": max(0, ai_jobs),
+        "llm_runs": max(0, llm_runs),
+    }
+
+
 @contextlib.contextmanager
 def transaction(connection: sqlite3.Connection, immediate: bool = False) -> Iterator[sqlite3.Connection]:
     connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")

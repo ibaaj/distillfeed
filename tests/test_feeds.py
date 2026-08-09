@@ -178,3 +178,23 @@ def test_active_feed_links_are_not_stored(configured, monkeypatch):
         updated = connection.execute("SELECT * FROM feeds WHERE id=?", (feed_id,)).fetchone()
     assert item["url"] is None
     assert updated["html_url"] is None
+
+
+def test_forced_refresh_omits_cached_http_validators(configured, monkeypatch):
+    feed_id = _orient_feed(configured)
+    rss = b'<rss version="2.0"><channel><title>Feed</title></channel></rss>'
+    captured = {}
+    monkeypatch.setattr("rss_reader.feeds.validate_http_url", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "rss_reader.feeds.safe_get",
+        lambda *args, **kwargs: captured.update(kwargs) or FakeResponse(rss),
+    )
+    with connect(configured.database_path) as connection:
+        connection.execute(
+            "UPDATE feeds SET etag='stale-etag',last_modified='yesterday' WHERE id=?",
+            (feed_id,),
+        )
+        feed = connection.execute("SELECT * FROM feeds WHERE id=?", (feed_id,)).fetchone()
+        refresh_feed(connection, configured, feed, force=True)
+    assert "If-None-Match" not in captured["headers"]
+    assert "If-Modified-Since" not in captured["headers"]

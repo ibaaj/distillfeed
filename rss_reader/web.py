@@ -1356,6 +1356,8 @@ def create_app(config_path: str | None = None) -> Flask:
             ).fetchall()
             conditions: list[str] = []
             parameters: list[Any] = []
+            score_select = "NULL AS saved_score, '' AS saved_score_label"
+            order_by = "COALESCE(i.published_at,i.discovered_at) DESC"
             if tag:
                 conditions.append("EXISTS (SELECT 1 FROM item_tags chosen JOIN tags t ON t.id=chosen.tag_id WHERE chosen.item_id=i.id AND t.name=?)")
                 parameters.append(tag)
@@ -1366,6 +1368,34 @@ def create_app(config_path: str | None = None) -> Flask:
             elif view == "tags":
                 conditions.append("EXISTS (SELECT 1 FROM item_tags tagged WHERE tagged.item_id=i.id)")
                 title = "Tagged items"
+            elif view == "ai-ranked":
+                conditions.append(
+                    "EXISTS (SELECT 1 FROM ai_evaluations ranked WHERE ranked.item_id=i.id AND ranked.current=1)"
+                )
+                score_select = (
+                    "(SELECT ranked.relevance FROM ai_evaluations ranked "
+                    "WHERE ranked.item_id=i.id AND ranked.current=1 "
+                    "ORDER BY ranked.id DESC LIMIT 1) AS saved_score, "
+                    "'AI relevance' AS saved_score_label"
+                )
+                order_by = "saved_score DESC, COALESCE(i.published_at,i.discovered_at) DESC"
+                title = "Top AI-ranked articles"
+            elif view == "arxiv-ranked":
+                if connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='distillfeed_arxiv_papers'"
+                ).fetchone():
+                    conditions.append(
+                        "EXISTS (SELECT 1 FROM distillfeed_arxiv_papers ranked WHERE ranked.item_id=i.id AND ranked.llm_score IS NOT NULL)"
+                    )
+                    score_select = (
+                        "(SELECT ranked.llm_score FROM distillfeed_arxiv_papers ranked "
+                        "WHERE ranked.item_id=i.id LIMIT 1) AS saved_score, "
+                        "'arXiv AI rank' AS saved_score_label"
+                    )
+                    order_by = "saved_score DESC, COALESCE(i.published_at,i.discovered_at) DESC"
+                else:
+                    conditions.append("0=1")
+                title = "Top arXiv-ranked papers"
             else:
                 conditions.append("i.is_read_later=1")
                 view = "read-later"
@@ -1373,10 +1403,11 @@ def create_app(config_path: str | None = None) -> Flask:
             where = " AND ".join(conditions)
             items = connection.execute(
                 f"""SELECT i.*, f.title AS feed_title, g.title AS group_title,
+                           {score_select},
                            COALESCE((SELECT GROUP_CONCAT(t.name, ' · ') FROM item_tags it
                              JOIN tags t ON t.id=it.tag_id WHERE it.item_id=i.id), '') AS tags
                     FROM items i JOIN feeds f ON f.id=i.feed_id JOIN groups g ON g.id=f.group_id
-                    WHERE {where} ORDER BY COALESCE(i.published_at,i.discovered_at) DESC LIMIT 2000""",
+                    WHERE {where} ORDER BY {order_by} LIMIT 2000""",
                 parameters,
             ).fetchall()
         return render_template(
@@ -2126,7 +2157,12 @@ def create_app(config_path: str | None = None) -> Flask:
                 write_database_opml(connection, config.working_opml_path)
         except Exception as exc:
             return jsonify({"error": str(exc)}), 400
-        return jsonify({"status": "ok", "feed_id": feed_id}), 201
+        with connect(config.database_path) as connection:
+            visible_parent_id = None if group_id == ensure_ungrouped(connection) else group_id
+        return jsonify({
+            "status": "ok", "feed_id": feed_id, "title": title,
+            "group_id": group_id, "parent_id": visible_parent_id,
+        }), 201
 
     @app.patch("/api/feeds/<int:feed_id>")
     @mutation

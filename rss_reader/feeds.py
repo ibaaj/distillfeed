@@ -148,9 +148,12 @@ def refresh_feed(connection, config: Config, feed, force: bool = False) -> int:
         return 0
     options = config.section("feeds")
     headers = {"User-Agent": str(options["user_agent"]), "Accept": "application/atom+xml, application/rss+xml, application/xml, text/xml, */*;q=0.1"}
-    if feed["etag"]:
+    # A manual force retry must make a real request for the current document.
+    # This also avoids reusing validators captured around a captive-portal or
+    # otherwise broken network session.
+    if not force and feed["etag"]:
         headers["If-None-Match"] = feed["etag"]
-    if feed["last_modified"]:
+    if not force and feed["last_modified"]:
         headers["If-Modified-Since"] = feed["last_modified"]
     LOGGER.info("Reading feed id=%s title=%r source=%s", feed["id"], feed["title"], feed["xml_url"])
     try:

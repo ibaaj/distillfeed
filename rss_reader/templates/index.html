@@ -15,11 +15,11 @@
   <meta name="selected-feed-id" content="{{ selected_feed_id or '' }}">
   <meta name="arxiv-digest-scope" content="{{ 'true' if is_arxiv_scope else 'false' }}">
   <meta name="item-sort-profile" content="{{ item_sort_profile or 'date' }}">
-  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='distillfeed-icon.svg', v='0.22.0') }}">
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='distillfeed-icon.svg', v='0.23.0') }}">
   <link rel="manifest" href="{{ url_for('static', filename='manifest.webmanifest') }}">
   <meta name="theme-color" content="#315f9c">
   <title>DistillFeed</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='0.22.0') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='0.23.0') }}">
 </head>
 {% set reader_notices = system_notices|default([], true) %}
 <body class="reader-page{% if ui.dark_mode %} dark-mode{% endif %}">
@@ -79,11 +79,11 @@
     <div class="top-actions">
       <a class="icon-only notification-link" href="/notifications" aria-label="System notices{% if notification_count %}: {{ notification_count }} notice{% if notification_count != 1 %}s{% endif %} need attention{% endif %}"><span aria-hidden="true">♢</span>{% if notification_count %}<span class="notification-badge">{{ notification_count }}</span>{% endif %}</a>
       <details class="nav-menu saved-menu"><summary class="toolbar-action" aria-label="Open saved items"><span class="toolbar-icon" aria-hidden="true">★</span><span class="toolbar-label">Saved items</span></summary><div>
-        <a href="/saved?view=favorites">Favorites</a><a href="/saved?view=read-later">Read later</a><a href="/saved?view=tags">Tagged items</a>
+        <a href="/saved?view=favorites">Favorites</a><a href="/saved?view=read-later">Read later</a><a href="/saved?view=tags">Tagged items</a><a href="/saved?view=ai-ranked">Top AI-ranked</a><a href="/saved?view=arxiv-ranked">Top arXiv-ranked</a>
       </div></details>
       <details class="nav-menu main-menu"><summary class="toolbar-action more-menu-button" aria-label="More DistillFeed pages and tools"><span class="toolbar-icon mobile-menu-glyph" aria-hidden="true">•••</span><span class="toolbar-label">Menu</span>{% if notification_count %}<span class="notification-badge mobile-menu-badge">{{ notification_count }}</span>{% endif %}</summary><div>
         <a href="/">Reader</a><a href="/ai">AI summaries</a><a href="/summaries">Latest summaries</a><a href="/notifications">System notices</a>
-        <span class="menu-separator"></span><a href="/saved?view=favorites">Favorites</a><a href="/saved?view=read-later">Read later</a><a href="/saved?view=tags">Tagged items</a>
+        <span class="menu-separator"></span><a href="/saved?view=favorites">Favorites</a><a href="/saved?view=read-later">Read later</a><a href="/saved?view=tags">Tagged items</a><a href="/saved?view=ai-ranked">Top AI-ranked</a><a href="/saved?view=arxiv-ranked">Top arXiv-ranked</a>
         <span class="menu-separator"></span><a href="/history">Summary history</a><a href="/costs">AI cost explorer</a><a href="/health">Feed health</a><button id="settings-menu-button" type="button">Settings</button>
       </div></details>
       <button id="refresh-button" class="toolbar-action" aria-label="Check all RSS and Atom feeds" {% if 'summary-update' in locks or 'feed-refresh' in locks or 'llm-summary' in locks %}disabled{% endif %}><span aria-hidden="true">↻</span><span>Check feeds</span></button>
@@ -353,6 +353,6 @@
     </div>
   </form></dialog>
 
-  <script src="{{ url_for('static', filename='app.js', v='0.22.0') }}" defer></script>
+  <script src="{{ url_for('static', filename='app.js', v='0.23.0') }}" defer></script>
 </body>
 </html>

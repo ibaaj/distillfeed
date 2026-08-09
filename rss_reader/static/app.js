@@ -287,7 +287,7 @@
       jobCancel.disabled = false; jobCancel.textContent = 'Stop'; notify(error.message);
     }
   });
-  document.getElementById('refresh-button')?.addEventListener('click', () => startJob('/api/refresh', {}, 'Checking all feeds…'));
+  document.getElementById('refresh-button')?.addEventListener('click', () => startJob('/api/refresh', { force: true }, 'Checking all feeds…'));
   function selectedScopePayload() {
     const feedId = document.querySelector('meta[name="selected-feed-id"]')?.content;
     const groupId = document.querySelector('meta[name="selected-group-id"]')?.content;
@@ -962,6 +962,25 @@
       const result = await api('/api/feeds', { method: 'POST', body: JSON.stringify(formObject(event.target)) });
       document.getElementById('feed-dialog')?.close();
       sessionStorage.setItem('subscriptionEditMode', '1');
+      const parent = result.parent_id
+        ? subscriptionTree?.querySelector(`.group.subscription-entry[data-id="${result.parent_id}"] > .subscription-container`)
+        : subscriptionTree;
+      if (parent) {
+        parent.querySelector(':scope > .empty')?.remove();
+        const row = document.createElement('div');
+        row.className = 'feed-row subscription-entry pending-refresh';
+        row.dataset.kind = 'feed'; row.dataset.id = String(result.feed_id);
+        row.dataset.parentId = result.parent_id ? String(result.parent_id) : '';
+        const label = document.createElement('a');
+        label.className = 'feed-label'; label.href = `/?feed=${result.feed_id}`;
+        label.textContent = result.title;
+        const state = document.createElement('span');
+        state.className = 'source-paused'; state.setAttribute('aria-label', 'Feed saved; first check pending');
+        state.textContent = '…';
+        row.append(label, state); parent.appendChild(row);
+        syncSubscriptionMoveButtons();
+      }
+      event.target.reset();
       startJob('/api/refresh', { feed_id: result.feed_id, force: true }, 'Saving and checking the new feed…');
     } catch (error) { notify(error.message); }
   });

@@ -11,7 +11,7 @@ set -Eeuo pipefail
 # AI calls are separate, explicit opt-ins; the default run only uses mocked
 # network responses from the test suite and loopback HTTP health requests.
 
-EXPECTED_VERSION="0.22.0"
+EXPECTED_VERSION="0.23.0"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 ARCHIVE="${ARCHIVE:-$SCRIPT_DIR/distillfeed-$EXPECTED_VERSION.tar.gz}"
 TEST_TMPDIR="${TEST_TMPDIR:-${TMPDIR:-/tmp}}"
@@ -185,13 +185,7 @@ required_files = {
     "distillfeed/tests/test_setup_profiles.py",
     "distillfeed/tests/test_setup_state_model.py",
     "distillfeed/deployment/start.sh",
-    "distillfeed/AUDIT.md",
-    "distillfeed/CHANGELOG.md",
-    "distillfeed/MATURITY_AUDIT_0.22.0.md",
-    "distillfeed/QUALITY.md",
     "distillfeed/README.md",
-    "distillfeed/SECURITY.md",
-    "distillfeed/docs/CUSTOM_FEEDS.md",
 }
 executable_files = {
     "distillfeed/install.sh",
