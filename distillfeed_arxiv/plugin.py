@@ -142,12 +142,10 @@ def _needs_storage(connection: Any, paper: Paper) -> bool:
         "SELECT 1 FROM distillfeed_arxiv_papers WHERE arxiv_id=?", (paper.arxiv_id,),
     ).fetchone():
         return True
-    row = connection.execute(
-        "SELECT version FROM distillfeed_arxiv_seen WHERE arxiv_id=?", (paper.arxiv_id,),
-    ).fetchone()
-    if not row:
-        return True
-    return bool(paper.version and row["version"] and paper.version != row["version"])
+    # Older releases retained only a compact "seen" record for papers that did
+    # not reach the LLM shortlist.  Store them again whenever retrieval sees
+    # them so the complete announcement becomes browseable.
+    return True
 
 
 def _ensure_sources(connection: Any, cfg: dict[str, Any]) -> tuple[int, dict[str, int]]:
@@ -486,7 +484,7 @@ class ArxivDigestPlugin:
             key=lambda entry: entry[2].score, reverse=True,
         )[:maximum]
         shortlisted_ids = {item_id for item_id, _, _ in shortlisted}
-        retained_ids = set(shortlisted_ids)
+        retained_ids = {item_id for item_id, _, _ in scored}
         with transaction(context.connection, immediate=True):
             for item_id, paper, local in scored:
                 selected = item_id in shortlisted_ids
@@ -498,22 +496,12 @@ class ArxivDigestPlugin:
                         (local.score, json.dumps(local.reasons, ensure_ascii=False), item_id),
                     )
                     continue
-                saved = context.connection.execute(
-                    """SELECT i.is_starred OR i.is_read_later OR EXISTS(
-                               SELECT 1 FROM item_tags it WHERE it.item_id=i.id
-                           ) FROM items i WHERE i.id=?""",
-                    (item_id,),
-                ).fetchone()
-                if saved and bool(saved[0]):
-                    retained_ids.add(item_id)
-                    context.connection.execute(
-                        """UPDATE distillfeed_arxiv_papers SET local_score=?,local_reasons_json=?,
-                           decision='drop',why='Screened out before LLM reranking',
-                           evaluation_status='screened_out',evaluated_at=? WHERE item_id=?""",
-                        (local.score, json.dumps(local.reasons, ensure_ascii=False), utcnow(), item_id),
-                    )
-                else:
-                    context.connection.execute("DELETE FROM items WHERE id=?", (item_id,))
+                context.connection.execute(
+                    """UPDATE distillfeed_arxiv_papers SET local_score=?,local_reasons_json=?,
+                       decision='drop',why='Screened out before AI reranking',
+                       evaluation_status='screened_out',evaluated_at=? WHERE item_id=?""",
+                    (local.score, json.dumps(local.reasons, ensure_ascii=False), utcnow(), item_id),
+                )
         stats["screened_locally"] = len(scored) - len(shortlisted)
         stats["selected_for_llm"] = len(shortlisted)
         stats["new_items"] = len(created_item_ids.intersection(retained_ids))

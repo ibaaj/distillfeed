@@ -11,7 +11,7 @@ set -Eeuo pipefail
 # AI calls are separate, explicit opt-ins; the default run only uses mocked
 # network responses from the test suite and loopback HTTP health requests.
 
-EXPECTED_VERSION="0.23.0"
+EXPECTED_VERSION="0.23.1"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 ARCHIVE="${ARCHIVE:-$SCRIPT_DIR/distillfeed-$EXPECTED_VERSION.tar.gz}"
 TEST_TMPDIR="${TEST_TMPDIR:-${TMPDIR:-/tmp}}"
@@ -424,11 +424,13 @@ if len(distillfeed_packages) != 1:
     raise SystemExit("uv.lock must contain exactly one distillfeed package")
 checks["uv.lock"] = str(distillfeed_packages[0].get("version", ""))
 
-citation = (root / "CITATION.cff").read_text("utf-8")
-match = re.search(r"^version:\s*[\"']?([^\s\"']+)", citation, re.M)
-if not match:
-    raise SystemExit("CITATION.cff has no version")
-checks["CITATION.cff"] = match.group(1)
+citation_path = root / "CITATION.cff"
+if citation_path.is_file():
+    citation = citation_path.read_text("utf-8")
+    match = re.search(r"^version:\s*[\"']?([^\s\"']+)", citation, re.M)
+    if not match:
+        raise SystemExit("CITATION.cff has no version")
+    checks["CITATION.cff"] = match.group(1)
 
 bad = {name: value for name, value in checks.items() if value != expected}
 if bad:

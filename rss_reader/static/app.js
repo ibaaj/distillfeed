@@ -523,10 +523,13 @@
   let settingsDirty = false;
   let settingsSaving = false;
   let settingsSavedSinceOpen = false;
-  let selectedSettingsPanel = sessionStorage.getItem('distillfeedSettingsPanel') || settingsPanels[0]?.id || '';
+  const storedSettingsPanel = sessionStorage.getItem('distillfeedSettingsPanel') || '';
+  const settingsPanelAliases = { 'settings-updates': 'settings-feed-updates' };
+  let selectedSettingsPanel = settingsPanelAliases[storedSettingsPanel]
+    || storedSettingsPanel || 'settings-appearance';
   function selectSettingsPanel(panelId, { focus = false, remember = true } = {}) {
     let panel = settingsPanels.find(candidate => candidate.id === panelId);
-    if (!panel) panel = settingsPanels[0];
+    if (!panel) panel = settingsPanels.find(candidate => candidate.id === 'settings-appearance') || settingsPanels[0];
     if (!panel) return;
     selectedSettingsPanel = panel.id;
     settingsPanels.forEach(candidate => candidate.classList.toggle('active', candidate === panel));
@@ -568,7 +571,8 @@
   document.getElementById('settings-menu-button')?.addEventListener('click', showSettings);
   const requestedSettingsPanel = new URLSearchParams(location.search).get('settings');
   if (requestedSettingsPanel) {
-    const panelId = `settings-${requestedSettingsPanel}`;
+    const requestedPanelId = `settings-${requestedSettingsPanel}`;
+    const panelId = settingsPanelAliases[requestedPanelId] || requestedPanelId;
     if (settingsPanels.some(panel => panel.id === panelId)) {
       selectSettingsPanel(panelId); showSettings();
     }

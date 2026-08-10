@@ -8,7 +8,7 @@ fi
 set -Eeuo pipefail
 umask 077
 
-EXPECTED_VERSION="0.23.0"
+EXPECTED_VERSION="0.23.1"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 DEFAULT_ARCHIVE="$SCRIPT_DIR/distillfeed-$EXPECTED_VERSION.tar.gz"
 
@@ -26,7 +26,7 @@ Upgrade an existing DistillFeed installation to $EXPECTED_VERSION without
 network, feed-refresh, or AI-provider calls.
 
 Options:
-  --archive PATH    Release archive (default: $DEFAULT_ARCHIVE)
+  --archive PATH    Release .tar.gz or update-bundle .zip (default: $DEFAULT_ARCHIVE)
   --config PATH     Existing config.toml (default: the one unambiguous local instance)
   --allow-active    Bypass legacy process/database checks (filesystem locks remain mandatory)
   --keep-stage      Retain the temporary staging directory after success
@@ -514,8 +514,63 @@ then
     fail "could not acquire .distillfeed/install.lock; wait for installation to finish and retry"
 fi
 
+note "Resolving the release payload..."
+ARCHIVE="$(python3 - "$ARCHIVE" "$STAGE" "$EXPECTED_VERSION" "${ARCHIVE_SHA256:-}" <<'PY'
+from __future__ import annotations
+
+import hashlib
+import re
+import shutil
+import sys
+import zipfile
+from pathlib import Path
+
+source = Path(sys.argv[1])
+stage = Path(sys.argv[2])
+version = sys.argv[3]
+expected_digest = sys.argv[4].strip().lower()
+maximum_bytes = 128 * 1024 * 1024
+
+if source.stat().st_size > maximum_bytes:
+    raise SystemExit("Release input exceeds the 128 MiB size limit")
+if expected_digest and not re.fullmatch(r"[0-9a-f]{64}", expected_digest):
+    raise SystemExit("ARCHIVE_SHA256 must contain exactly 64 hexadecimal characters")
+digest = hashlib.sha256()
+with source.open("rb") as handle:
+    while chunk := handle.read(1024 * 1024):
+        digest.update(chunk)
+actual_digest = digest.hexdigest()
+if expected_digest and actual_digest != expected_digest:
+    raise SystemExit(
+        f"Archive SHA-256 mismatch: expected {expected_digest}, found {actual_digest}"
+    )
+
+if not zipfile.is_zipfile(source):
+    print(source)
+    raise SystemExit(0)
+
+member_name = f"distillfeed-{version}.tar.gz"
+with zipfile.ZipFile(source) as bundle:
+    matches = [item for item in bundle.infolist() if item.filename == member_name]
+    if len(matches) != 1:
+        raise SystemExit(
+            f"Release bundle must contain exactly one top-level {member_name}"
+        )
+    member = matches[0]
+    if member.is_dir() or member.flag_bits & 0x1:
+        raise SystemExit("The bundled release payload is invalid or encrypted")
+    if member.file_size <= 0 or member.file_size > maximum_bytes:
+        raise SystemExit("The bundled release payload has an invalid size")
+    destination = stage / member_name
+    with bundle.open(member) as source_handle, destination.open("xb") as output:
+        shutil.copyfileobj(source_handle, output, length=1024 * 1024)
+    destination.chmod(0o600)
+print(destination)
+PY
+)" || fail "could not resolve the release payload"
+
 note "Validating and extracting the release archive..."
-python3 - "$ARCHIVE" "$EXTRACT_ROOT" "$EXPECTED_VERSION" "${ARCHIVE_SHA256:-}" <<'PY'
+python3 - "$ARCHIVE" "$EXTRACT_ROOT" "$EXPECTED_VERSION" "" <<'PY'
 from __future__ import annotations
 
 import hashlib

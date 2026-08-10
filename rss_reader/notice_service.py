@@ -126,7 +126,7 @@ def derive_issues(connection, config: Config) -> list[dict[str, Any]]:
                 message = ""
             if message:
                 issues.append(_candidate(
-                    "ntfy:empty-scope", "warning", "Device alerts have no active source",
+                    "ntfy:empty-scope", "warning", "ntfy service has no active source",
                     message, "/?settings=notifications", "Review device alert sources",
                 ))
 

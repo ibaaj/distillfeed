@@ -36,6 +36,38 @@ def test_openai_model_presets_keep_cost_rates_in_sync(configured):
     }
 
 
+def test_settings_module_partial_writes_do_not_cross_mutate(configured):
+    client = create_app(str(configured.path)).test_client()
+    headers = {"X-CSRF-Token": csrf_from(client.get("/"))}
+    before = load_config(configured.path)
+    original_model = before.get("llm", "model")
+    original_threshold = before.get("llm", "minimum_relevance")
+    original_ntfy_topic = before.section("notifications")["ntfy"]["topic"]
+
+    feed_update = client.post(
+        "/api/config",
+        json={"values": {"app.refresh_interval_minutes": 47}},
+        headers=headers,
+    )
+    assert feed_update.status_code == 200
+    after_feed = load_config(configured.path)
+    assert after_feed.get("app", "refresh_interval_minutes") == 47
+    assert after_feed.get("llm", "model") == original_model
+    assert after_feed.get("llm", "minimum_relevance") == original_threshold
+    assert after_feed.section("notifications")["ntfy"]["topic"] == original_ntfy_topic
+
+    summary_update = client.post(
+        "/api/config",
+        json={"values": {"llm.minimum_relevance": 81}},
+        headers=headers,
+    )
+    assert summary_update.status_code == 200
+    final = load_config(configured.path)
+    assert final.get("llm", "minimum_relevance") == 81
+    assert final.get("app", "refresh_interval_minutes") == 47
+    assert final.section("notifications")["ntfy"]["topic"] == original_ntfy_topic
+
+
 def test_item_details_date_hierarchy_and_portable_exports(configured):
     with connect(configured.database_path) as connection:
         group_id = connection.execute(
@@ -82,7 +114,7 @@ def test_item_details_date_hierarchy_and_portable_exports(configured):
     summaries = client.get("/summaries")
     assert b"Print / PDF" in summaries.data
     assert b'aria-label="Print or save summaries as PDF"' in summaries.data
-    assert b"summary.js?v=0.23.0" in summaries.data
+    assert b"summary.js?v=0.23.1" in summaries.data
 
 
 def test_standalone_page_headers_keep_actions_compact(configured):
@@ -187,6 +219,21 @@ def test_page_and_subscription_mutations(configured, monkeypatch):
     assert b'data-settings-target="settings-ai"' in page.data
     assert b'data-settings-target="settings-notifications"' in page.data
     assert b'id="settings-notifications" class="settings-panel"' in page.data
+    assert b'id="settings-ai-provider" class="settings-panel"' in page.data
+    assert b'id="settings-arxiv" class="settings-panel"' in page.data
+    assert b'<strong>Feed updates</strong>' in page.data
+    assert b'<strong>ntfy service</strong>' in page.data
+    assert b'<strong>Other devices</strong>' not in page.data
+    for path in (
+        "llm.provider", "llm.api_key_env", "llm.base_url", "llm.model",
+        "llm.monthly_budget_usd", "llm.enabled", "app.summary_language",
+        "app.interest_profile", "llm.review_workload", "llm.minimum_relevance",
+        "llm.maximum_summary_items", "app.auto_refresh_on_load",
+        "app.background_scheduler_enabled", "app.refresh_interval_minutes",
+        "app.auto_summarize_after_refresh", "notifications.ntfy.enabled",
+        "notifications.ntfy.server_url", "notifications.ntfy.topic",
+    ):
+        assert page.data.count(f'data-config-path="{path}"'.encode()) == 1
     assert b"AI notifications" not in page.data
     assert b'class="settings-switch"' in page.data
     assert b'role="switch"' in page.data
@@ -513,6 +560,8 @@ def test_popup_and_dialog_script_enforces_one_visible_layer(configured):
     assert b"popupBackdrop?.addEventListener('click', () => closePopupMenus())" in script
     assert b"subscriptionBackdrop?.addEventListener('click'" in script
     assert b"document.getElementById('settings-menu-button')?.addEventListener('click', showSettings)" in script
+    assert b"'settings-updates': 'settings-feed-updates'" in script
+    assert b"storedSettingsPanel || 'settings-appearance'" in script
 
 
 def test_subscription_manage_mode_has_aligned_accessible_and_bounded_controls(configured):
@@ -579,7 +628,7 @@ def test_mobile_layers_narrow_pane_controls_and_favicon_are_bounded(configured):
     assert b'class="nav-menu main-menu"' in page.data
     assert b'<span class="toolbar-label">Menu</span>' in page.data
     assert b'class="action-menu scope-actions"' in page.data
-    favicon = b'<link rel="icon" type="image/svg+xml" href="/static/distillfeed-icon.svg?v=0.23.0">'
+    favicon = b'<link rel="icon" type="image/svg+xml" href="/static/distillfeed-icon.svg?v=0.23.1">'
     for path in ("/", "/summaries", "/history", "/health", "/notifications", "/costs", "/saved?view=favorites"):
         response = client.get(path)
         assert response.status_code == 200

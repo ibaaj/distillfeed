@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='distillfeed-icon.svg', v='0.23.1') }}">
+  <meta name="csrf-token" content="{{ csrf_token() }}"><meta name="auto-refresh" content="false">
+  <meta name="item-font-size" content="{{ ui.item_font_size }}"><meta name="offline-cache-enabled" content="false"><meta name="completion-notifications" content="false">
+  <title>All arXiv papers · DistillFeed</title><link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='0.23.1') }}"></head>
+<body class="summaries-page{% if ui.dark_mode %} dark-mode{% endif %}">
+  <header class="topbar page-header"><a class="brand" href="/">← DistillFeed</a><strong class="page-title">All arXiv papers</strong><nav class="page-actions"><a class="button-link" href="/ai#arxiv">arXiv settings</a><a class="button-link" href="/saved?view=arxiv-ranked">Top ranked</a></nav></header>
+  <main class="saved-page arxiv-archive-page">
+    <nav class="saved-navigation" aria-label="arXiv paper states">
+      {% for value, label in (('all','All fetched'),('pending','Awaiting AI'),('screened','Locally screened out'),('kept','Kept by AI'),('dropped','Dropped by AI')) %}<a class="{% if selected_status == value %}selected{% endif %}" href="/arxiv?status={{ value }}{% if query %}&q={{ query|urlencode }}{% endif %}"><span>{{ label }}</span><span>{{ counts[value] }}</span></a>{% endfor %}
+      <aside class="settings-note">The daily digest is intentionally selective. This archive retains the complete fetched announcement, including papers omitted from the digest.</aside>
+    </nav>
+    <section class="saved-results"><header><h1>{{ {'all':'All fetched papers','pending':'Awaiting AI ranking','screened':'Locally screened out','kept':'Kept by AI','dropped':'Dropped by AI'}[selected_status] }}</h1><span>{{ total }} paper{% if total != 1 %}s{% endif %}</span></header>
+      <form class="arxiv-search" method="get"><input type="hidden" name="status" value="{{ selected_status }}"><label>Search title, author, or arXiv ID<input type="search" name="q" value="{{ query }}" maxlength="200"></label><button type="submit">Search</button>{% if query %}<a class="button-link" href="/arxiv?status={{ selected_status }}">Clear</a>{% endif %}</form>
+      {% if not available %}<p class="empty">The arXiv module has not been initialized yet.</p>{% else %}<div class="saved-list">{% for item in items %}<article class="item-row saved-row" tabindex="0" data-item-id="{{ item.id }}" data-feed-id="{{ item.feed_id }}" data-read="{{ 1 if item.is_read else 0 }}" data-starred="{{ 1 if item.is_starred else 0 }}" data-read-later="{{ 1 if item.is_read_later else 0 }}">
+        <button class="star-button{% if item.is_starred %} starred{% endif %}" data-starred="{{ 1 if item.is_starred else 0 }}" aria-label="{{ 'Remove favorite' if item.is_starred else 'Add favorite' }}">★</button><button class="read-later-button" data-read-later="{{ 1 if item.is_read_later else 0 }}" aria-label="{{ 'Remove from Read later' if item.is_read_later else 'Add to Read later' }}">▣</button>
+        <span class="item-feed">{{ item.feed_title }}</span>{% set safe_url = safe_external_url(item.url) %}{% if safe_url %}<a class="item-title" href="{{ safe_url }}" target="_blank" rel="noopener noreferrer">{{ item.title }}</a>{% else %}<span class="item-title">{{ item.title }}</span>{% endif %}
+        <span class="saved-tags"><strong>{% if item.evaluation_status == 'pending' %}Awaiting AI{% elif item.evaluation_status == 'screened_out' %}Locally screened out{% elif item.decision == 'keep' %}AI kept{% else %}AI dropped{% endif %}</strong> · Local {{ item.local_score if item.local_score is not none else 'pending' }} · AI {{ item.llm_score if item.llm_score is not none else 'not run' }}{% if item.arxiv_id %} · {{ item.arxiv_id }}{% endif %}</span>
+        <button class="read-button" data-read="{{ 1 if item.is_read else 0 }}" aria-label="Toggle read status">{{ '○' if item.is_read else '●' }}</button>
+      </article>{% else %}<p class="empty">No papers match this view.</p>{% endfor %}</div>{% endif %}
+      {% if page_count > 1 %}<nav class="pagination" aria-label="arXiv archive pages">{% if page > 1 %}<a class="button-link" href="/arxiv?status={{ selected_status }}&q={{ query|urlencode }}&page={{ page - 1 }}">Previous</a>{% endif %}<span>Page {{ page }} of {{ page_count }}</span>{% if page < page_count %}<a class="button-link" href="/arxiv?status={{ selected_status }}&q={{ query|urlencode }}&page={{ page + 1 }}">Next</a>{% endif %}</nav>{% endif %}
+    </section>
+  </main><div id="toast" role="status" aria-live="polite"></div><script src="{{ url_for('static', filename='app.js', v='0.23.1') }}" defer></script>
+</body></html>

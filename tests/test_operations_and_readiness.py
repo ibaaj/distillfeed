@@ -111,7 +111,7 @@ def test_selected_ntfy_mode_without_a_source_becomes_a_system_notice(configured)
         replace_ntfy_scope_policy(connection, "selected", [])
         active = synchronize_issues(connection, configured)
     issue = next(item for item in active if item["issue_key"] == "ntfy:empty-scope")
-    assert issue["title"] == "Device alerts have no active source"
+    assert issue["title"] == "ntfy service has no active source"
     assert "No article alert will be sent" in issue["message"]
     assert issue["action_url"] == "/?settings=notifications"
 

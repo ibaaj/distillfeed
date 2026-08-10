@@ -17,7 +17,7 @@ from distillfeed_arxiv.models import LocalScore, Paper
 from distillfeed_arxiv.notifications import deliver_arxiv_pushes
 from distillfeed_arxiv.plugin import ArxivDigestPlugin
 from rss_reader.config import DEFAULTS, Config, load_config, save_config
-from rss_reader.db import connect, initialize
+from rss_reader.db import connect, initialize, utcnow
 from rss_reader.plugins import RefreshContext, available_plugin_names, refresh_plugins
 from rss_reader.opml import build_tree_from_database, parse_opml_bytes, serialize_opml
 from rss_reader.web import _group_tree, create_app
@@ -390,13 +390,26 @@ def test_large_announcement_shortlists_once_and_repeat_is_model_free(configured,
     assert first["fetched_items"] == 120
     assert first["selected_for_llm"] == 100
     assert first["screened_locally"] == 20
-    assert first["new_items"] == 100
+    assert first["new_items"] == 120
     assert first["status"] == "waiting-for-digest"
     assert calls == {"rank": 0, "digest": 0}
+    assert {
+        row["evaluation_status"]: int(row["count"])
+        for row in connection.execute(
+            """SELECT evaluation_status,COUNT(*) AS count
+                 FROM distillfeed_arxiv_papers GROUP BY evaluation_status"""
+        ).fetchall()
+    } == {"pending": 100, "screened_out": 20}
     digested = plugin.summarize(context(configured, connection))
     assert digested["status"] == "success"
     assert calls == {"rank": 1, "digest": 1}
-    assert connection.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 100
+    assert connection.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 120
+    assert connection.execute(
+        "SELECT COUNT(*) FROM distillfeed_arxiv_papers WHERE evaluation_status='screened_out'"
+    ).fetchone()[0] == 20
+    assert connection.execute(
+        "SELECT COUNT(*) FROM distillfeed_arxiv_papers WHERE evaluation_status='complete'"
+    ).fetchone()[0] == 100
     assert connection.execute("SELECT COUNT(*) FROM distillfeed_arxiv_seen").fetchone()[0] == 120
 
     second = plugin.refresh(context(configured, connection))
@@ -405,6 +418,81 @@ def test_large_announcement_shortlists_once_and_repeat_is_model_free(configured,
     assert repeated["status"] == "unchanged"
     assert calls == {"rank": 1, "digest": 1}
     connection.close()
+
+
+def test_previously_seen_only_paper_is_restored_to_browseable_archive(configured, monkeypatch):
+    connection = connect(configured.database_path)
+    plugin = ArxivDigestPlugin()
+    plugin.initialize(connection, configured)
+    candidate = paper("2607.77777")
+    connection.execute(
+        """INSERT INTO distillfeed_arxiv_seen(
+               arxiv_id,version,first_seen_at,last_seen_at,local_score,selected
+           ) VALUES(?,?,?,?,?,0)""",
+        (candidate.arxiv_id, candidate.version, utcnow(), utcnow(), -3),
+    )
+    monkeypatch.setattr(plugin_module, "fetch_rss", lambda category, cfg: [candidate])
+    monkeypatch.setattr(plugin_module, "fetch_api_window", lambda *args, **kwargs: [])
+    monkeypatch.setattr(plugin_module.time, "sleep", lambda _: None)
+
+    result = plugin.refresh(context(configured, connection))
+
+    assert result["new_items"] == 1
+    restored = connection.execute(
+        """SELECT ap.evaluation_status,i.title FROM distillfeed_arxiv_papers ap
+             JOIN items i ON i.id=ap.item_id WHERE ap.arxiv_id=?""",
+        (candidate.arxiv_id,),
+    ).fetchone()
+    assert restored["title"] == candidate.title
+    assert restored["evaluation_status"] in {"pending", "screened_out"}
+    connection.close()
+
+
+def test_all_arxiv_archive_exposes_every_screening_state(configured):
+    configured.data["plugins"]["arxiv_digest_enabled"] = True
+    save_config(configured)
+    with connect(configured.database_path) as connection:
+        plugin = ArxivDigestPlugin()
+        plugin.initialize(connection, configured)
+        feed_id = int(connection.execute(
+            "SELECT id FROM feeds WHERE xml_url='plugin://arxiv/cs.AI'"
+        ).fetchone()[0])
+        states = (
+            ("pending", None, None),
+            ("screened_out", "drop", None),
+            ("complete", "keep", 96),
+            ("complete", "drop", 31),
+        )
+        for index, (evaluation_status, decision, llm_score) in enumerate(states):
+            item_id = int(connection.execute(
+                """INSERT INTO items(feed_id,stable_id,title,url,author,published_at,
+                           discovered_at,description_text,summary_eligible)
+                   VALUES(?,?,?,?,?,?,?,?,0)""",
+                (
+                    feed_id, f"archive-{index}", f"Archive paper {index}",
+                    f"https://arxiv.org/abs/2608.1000{index}", "Researcher",
+                    f"2026-08-10T0{index}:00:00+00:00", utcnow(), "Abstract",
+                ),
+            ).lastrowid)
+            connection.execute(
+                """INSERT INTO distillfeed_arxiv_papers(
+                       item_id,arxiv_id,categories_json,primary_category,source,
+                       local_score,llm_score,decision,evaluation_status)
+                   VALUES(?,?,'["cs.AI"]','cs.AI','rss',?,?,?,?)""",
+                (item_id, f"2608.1000{index}", index, llm_score, decision, evaluation_status),
+            )
+
+    client = create_app(str(configured.path)).test_client()
+    all_page = client.get("/arxiv")
+    assert all_page.status_code == 200
+    assert b"All fetched papers" in all_page.data
+    assert b"Locally screened out" in all_page.data
+    assert all_page.data.count(b'class="item-row saved-row"') == 4
+    kept = client.get("/arxiv?status=kept")
+    assert kept.data.count(b'class="item-row saved-row"') == 1
+    assert b"AI kept" in kept.data and b"96" in kept.data
+    searched = client.get("/arxiv?q=2608.10002")
+    assert searched.data.count(b'class="item-row saved-row"') == 1
 
 
 def test_same_day_late_evidence_creates_append_only_digest_revision(configured, monkeypatch):

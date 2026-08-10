@@ -612,25 +612,25 @@ def _flatten_config(data: dict[str, Any]) -> list[dict[str, Any]]:
         "ui.dark_mode": ("Appearance", "Dark mode"),
         "ui.groups_expanded_by_default": ("Appearance", "Open subscription groups by default"),
         "ui.offline_cache_enabled": ("Appearance", "Keep the latest reader pages available offline"),
-        "ui.completion_notifications": ("Updates", "Browser alert when an update finishes"),
+        "ui.completion_notifications": ("Feed updates", "Browser alert when an update finishes"),
         "ui.subscription_font_size": ("Appearance", "Subscription text size"),
         "ui.item_font_size": ("Appearance", "Item text size"),
         "ui.summary_font_size": ("Appearance", "Summary text size"),
         "llm.enabled": ("AI summaries", "Enable ordinary AI summaries"),
         "app.summary_language": ("AI summaries", "Summary language"),
         "app.interest_profile": ("AI summaries", "Topics and interests"),
-        "llm.provider": ("AI summaries", "AI provider"),
-        "llm.api_key_env": ("AI summaries", "API key environment variable"),
-        "llm.base_url": ("AI summaries", "Ollama API URL"),
-        "llm.model": ("AI summaries", "AI model"),
+        "llm.provider": ("AI provider", "Provider"),
+        "llm.api_key_env": ("AI provider", "API key environment variable"),
+        "llm.base_url": ("AI provider", "Ollama API URL"),
+        "llm.model": ("AI provider", "Model"),
         "llm.review_workload": ("AI summaries", "Workload per update"),
         "llm.candidate_max_age_days": ("AI summaries", "Unscored candidate age limit (days)"),
         "llm.minimum_relevance": ("AI summaries", "Include articles scoring at least (0–100)"),
         "llm.maximum_summary_items": ("AI summaries", "Maximum entries in one summary"),
         "llm.max_entries_total": ("Advanced", "Maximum items per AI request"),
-        "llm.monthly_budget_usd": ("Advanced", "Local monthly AI budget (USD)"),
+        "llm.monthly_budget_usd": ("AI provider", "Local monthly AI budget (USD)"),
         "llm.rolling_digest_hours": ("AI summaries", "Ordinary summary evidence window (hours)"),
-        "app.auto_summarize_after_refresh": ("AI summaries", "Update summaries after checking feeds"),
+        "app.auto_summarize_after_refresh": ("Feed updates", "Run AI summaries after a scheduled feed check"),
         "weather.enabled": ("Weather", "Show weather"),
         "weather.language": ("Weather", "Weather language"),
         "weather.location_name": ("Weather", "Location name"),
@@ -638,10 +638,10 @@ def _flatten_config(data: dict[str, Any]) -> list[dict[str, Any]]:
         "weather.longitude": ("Weather", "Longitude"),
         "weather.timezone": ("Weather", "Timezone"),
         "weather.refresh_minutes": ("Weather", "Refresh interval (minutes)"),
-        "app.auto_refresh_on_load": ("Updates", "Refresh on schedule while this reader is open"),
-        "app.background_scheduler_enabled": ("Updates", "Run feed checks while the browser is closed"),
-        "app.refresh_interval_minutes": ("Updates", "Update interval (minutes)"),
-        "feeds.user_agent": ("Updates", "Feed request identity (User-Agent)"),
+        "app.auto_refresh_on_load": ("Feed updates", "Check feeds on schedule while this reader is open"),
+        "app.background_scheduler_enabled": ("Feed updates", "Check feeds while the browser is closed"),
+        "app.refresh_interval_minutes": ("Feed updates", "Feed-check interval (minutes)"),
+        "feeds.user_agent": ("Feed updates", "Feed request identity (User-Agent)"),
         "feeds.timeout_seconds": ("Advanced", "Feed request timeout (seconds)"),
         "feeds.max_response_bytes": ("Advanced", "Maximum feed download (bytes)"),
         "feeds.max_entries_per_feed_update": ("Advanced", "Maximum entries per feed check"),
@@ -655,14 +655,14 @@ def _flatten_config(data: dict[str, Any]) -> list[dict[str, Any]]:
         "auth.enabled": ("Advanced", "Require application password"),
         "auth.username": ("Advanced", "Application username"),
         "auth.password_env": ("Advanced", "Password environment variable"),
-        "notifications.ntfy.enabled": ("Device alerts", "Send article alerts with ntfy"),
-        "notifications.ntfy.server_url": ("Device alerts", "ntfy server URL"),
-        "notifications.ntfy.topic": ("Device alerts", "ntfy topic"),
-        "notifications.ntfy.token_env": ("Device alerts", "Access-token environment variable"),
-        "notifications.ntfy.minimum_relevance": ("Device alerts", "Default relevance threshold"),
-        "notifications.ntfy.max_items_per_summary": ("Device alerts", "Maximum alerts per summary"),
-        "notifications.ntfy.priority": ("Device alerts", "Device alert priority"),
-        "notifications.ntfy.timeout_seconds": ("Device alerts", "Delivery timeout (seconds)"),
+        "notifications.ntfy.enabled": ("ntfy service", "Enable ntfy article alerts"),
+        "notifications.ntfy.server_url": ("ntfy service", "Server URL"),
+        "notifications.ntfy.topic": ("ntfy service", "Topic"),
+        "notifications.ntfy.token_env": ("ntfy service", "Access-token environment variable"),
+        "notifications.ntfy.minimum_relevance": ("ntfy service", "Default relevance threshold"),
+        "notifications.ntfy.max_items_per_summary": ("ntfy service", "Maximum alerts per summary"),
+        "notifications.ntfy.priority": ("ntfy service", "Alert priority"),
+        "notifications.ntfy.timeout_seconds": ("ntfy service", "Delivery timeout (seconds)"),
         "plugins.arxiv_digest_enabled": ("arXiv digest", "Enable focused arXiv digests"),
     }
 
@@ -1413,6 +1413,81 @@ def create_app(config_path: str | None = None) -> Flask:
         return render_template(
             "saved.html", items=items, tags=tags, selected_view=view,
             selected_tag=tag, title=title, ui=config.section("ui"),
+        )
+
+    @app.get("/arxiv")
+    def arxiv_archive_page():
+        """Browse every retained arXiv announcement, independent of the digest."""
+        page = max(1, request.args.get("page", default=1, type=int) or 1)
+        page_size = 100
+        selected_status = str(request.args.get("status", "all")).strip().casefold()
+        allowed_statuses = {"all", "pending", "screened", "kept", "dropped"}
+        if selected_status not in allowed_statuses:
+            selected_status = "all"
+        query = str(request.args.get("q", "")).strip()[:200]
+        with connect(config.database_path) as connection:
+            available = bool(connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='distillfeed_arxiv_papers'"
+            ).fetchone())
+            counts = {key: 0 for key in allowed_statuses}
+            items: list[Any] = []
+            total = 0
+            if available:
+                row = connection.execute(
+                    """SELECT COUNT(*) AS all_count,
+                              SUM(ap.evaluation_status='pending') AS pending_count,
+                              SUM(ap.evaluation_status='screened_out') AS screened_count,
+                              SUM(ap.evaluation_status='complete' AND ap.decision='keep') AS kept_count,
+                              SUM(ap.evaluation_status='complete' AND ap.decision='drop') AS dropped_count
+                         FROM distillfeed_arxiv_papers ap"""
+                ).fetchone()
+                counts = {
+                    "all": int(row["all_count"] or 0),
+                    "pending": int(row["pending_count"] or 0),
+                    "screened": int(row["screened_count"] or 0),
+                    "kept": int(row["kept_count"] or 0),
+                    "dropped": int(row["dropped_count"] or 0),
+                }
+                conditions: list[str] = []
+                parameters: list[Any] = []
+                status_sql = {
+                    "pending": "ap.evaluation_status='pending'",
+                    "screened": "ap.evaluation_status='screened_out'",
+                    "kept": "ap.evaluation_status='complete' AND ap.decision='keep'",
+                    "dropped": "ap.evaluation_status='complete' AND ap.decision='drop'",
+                }
+                if selected_status != "all":
+                    conditions.append(status_sql[selected_status])
+                if query:
+                    conditions.append("(i.title LIKE ? OR i.author LIKE ? OR ap.arxiv_id LIKE ?)")
+                    pattern = f"%{query}%"
+                    parameters.extend((pattern, pattern, pattern))
+                where = "WHERE " + " AND ".join(conditions) if conditions else ""
+                total = int(connection.execute(
+                    f"""SELECT COUNT(*) FROM distillfeed_arxiv_papers ap
+                         JOIN items i ON i.id=ap.item_id {where}""",
+                    parameters,
+                ).fetchone()[0])
+                page_count = max(1, (total + page_size - 1) // page_size)
+                page = min(page, page_count)
+                items = connection.execute(
+                    f"""SELECT i.*,f.title AS feed_title,ap.arxiv_id,ap.pdf_url,
+                                ap.local_score,ap.llm_score,ap.final_score,ap.decision,
+                                ap.why,ap.evaluation_status,ap.local_reasons_json
+                           FROM distillfeed_arxiv_papers ap
+                           JOIN items i ON i.id=ap.item_id
+                           JOIN feeds f ON f.id=i.feed_id
+                           {where}
+                          ORDER BY COALESCE(i.published_at,i.discovered_at) DESC,i.id DESC
+                          LIMIT ? OFFSET ?""",
+                    [*parameters, page_size, (page - 1) * page_size],
+                ).fetchall()
+            else:
+                page_count = 1
+        return render_template(
+            "arxiv.html", items=items, counts=counts, total=total,
+            selected_status=selected_status, query=query, page=page,
+            page_count=page_count, available=available, ui=config.section("ui"),
         )
 
     @app.get("/api/backup")

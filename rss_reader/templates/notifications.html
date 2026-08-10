@@ -4,15 +4,15 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="csrf-token" content="{{ csrf_token() }}">
-  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='distillfeed-icon.svg', v='0.23.0') }}">
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='distillfeed-icon.svg', v='0.23.1') }}">
   <title>System notices · DistillFeed</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='0.23.0') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='0.23.1') }}">
 </head>
 <body class="summaries-page{% if ui.dark_mode %} dark-mode{% endif %}">
   <header class="topbar page-header">
     <a class="brand" href="/">← DistillFeed</a>
     <strong class="page-title">System notices</strong>
-    <nav class="page-actions" aria-label="System notice page links"><a class="button-link" href="/?settings=notifications">Device alerts</a><a class="button-link" href="/costs">AI costs</a></nav>
+    <nav class="page-actions" aria-label="System notice page links"><a class="button-link" href="/?settings=notifications">ntfy service</a><a class="button-link" href="/costs">AI costs</a></nav>
   </header>
   <main class="notifications-page">
     <p class="page-intro">DistillFeed’s operational notices and activity history. Outbound alerts sent to other devices through ntfy are shown separately below.</p>
@@ -88,7 +88,7 @@
     <section class="notification-section" id="device-alerts">
       <h2>Alerts sent to other devices with ntfy</h2>
       {% if ntfy.enabled %}<p class="page-intro">ntfy sends up to {{ ntfy.max_items_per_summary }} newly selected item{% if ntfy.max_items_per_summary != 1 %}s{% endif %} after automatic summaries. {% if ntfy_scope.mode == 'all' %}All ordinary feeds use the default {{ ntfy.minimum_relevance }}/100 threshold.{% else %}Only sources matching one of {{ ntfy_scope.rule_count }} selected group/feed rule{% if ntfy_scope.rule_count != 1 %}s{% endif %} can send; feed rules override the nearest group rule.{% endif %} Each item is claimed once for this destination.</p>
-      {% else %}<p class="page-intro">Sending alerts to other devices is off. Configure <a href="/?settings=notifications">Other devices</a> when you want selected high-relevance entries delivered through ntfy.</p>{% endif %}
+      {% else %}<p class="page-intro">The ntfy service is off. Configure <a href="/?settings=notifications">ntfy service</a> when you want selected high-relevance entries delivered to ntfy clients.</p>{% endif %}
       <ul class="notification-list">
         {% for delivery in push_deliveries %}{% set safe_url = safe_external_url(delivery.url) %}<li class="{% if delivery.status == 'failed' %}notification-error{% endif %}">{% if safe_url %}<a href="{{ safe_url }}" target="_blank" rel="noopener noreferrer"><strong>{{ delivery.title }}</strong></a>{% else %}<strong>{{ delivery.title or 'Deleted item' }}</strong>{% endif %}<small>{{ delivery.feed_title or 'Source unavailable' }} · relevance {{ delivery.relevance }}/100 · {% if delivery.delivery_channel == 'arxiv' %}arXiv digest device rule{% else %}{{ delivery.policy_label or 'Legacy global rule' }} threshold {{ delivery.minimum_relevance if delivery.minimum_relevance is not none else ntfy.minimum_relevance }}/100{% endif %} · {{ delivery.status }} · {{ display_timestamp(delivery.delivered_at or delivery.attempted_at) }}</small>{% if delivery.error %}<small>{{ delivery.error }}</small>{% endif %}</li>
         {% else %}<li><strong>No ntfy device alert has been attempted.</strong></li>{% endfor %}
@@ -117,6 +117,6 @@
     </section>
   </main>
   <div id="toast" role="status" aria-live="polite"></div>
-  <script src="{{ url_for('static', filename='notifications.js', v='0.23.0') }}" defer></script>
+  <script src="{{ url_for('static', filename='notifications.js', v='0.23.1') }}" defer></script>
 </body>
 </html>
