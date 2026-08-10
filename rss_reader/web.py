@@ -214,6 +214,75 @@ def _json_list(value: Any) -> list[Any]:
     return parsed if isinstance(parsed, list) else []
 
 
+def _configured_arxiv_categories(config: Config) -> list[str]:
+    """Return the category scope currently selected in ArXiv settings."""
+    try:
+        fields = plugin_settings_fields(config)
+    except Exception:
+        LOGGER.exception("The configured ArXiv category scope could not be loaded")
+        return []
+    for field in fields:
+        if str(field.get("path", "")) != "plugin.arxiv_digest.arxiv.categories":
+            continue
+        raw_value = field.get("value", "")
+        values = raw_value if isinstance(raw_value, list) else re.split(r"[,\n]", str(raw_value))
+        categories: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            category = str(value).strip()
+            if category and category.casefold() not in seen:
+                categories.append(category)
+                seen.add(category.casefold())
+        return categories
+    return []
+
+
+def _arxiv_category_scope(
+    categories: list[str], *, paper_alias: str = "ap",
+) -> tuple[str, list[str]]:
+    """Build a parameterized condition matching any configured category."""
+    if not categories:
+        return "0", []
+    clauses: list[str] = []
+    parameters: list[str] = []
+    for category in categories:
+        clauses.append(
+            f"({paper_alias}.primary_category=? OR {paper_alias}.categories_json LIKE ?)"
+        )
+        parameters.extend((category, f'%"{category}"%'))
+    return "(" + " OR ".join(clauses) + ")", parameters
+
+
+def _order_reader_page(data: dict[str, Any]) -> None:
+    """Apply the initial item order and mirror it in the summary panel."""
+    profile = str(data.get("item_sort_profile") or "date")
+
+    def item_key(item: dict[str, Any]) -> tuple[Any, ...]:
+        timestamp = str(item.get("published_at") or item.get("discovered_at") or "")
+        day = timestamp[:10]
+        relevance = item.get("display_relevance", item.get("relevance"))
+        try:
+            score = float(relevance) if relevance is not None else -1.0
+        except (TypeError, ValueError):
+            score = -1.0
+        if profile == "relevance":
+            return day, score, timestamp, int(item.get("id") or 0)
+        return day, timestamp, int(item.get("id") or 0)
+
+    data["items"].sort(key=item_key, reverse=True)
+    positions = {
+        int(item["id"]): position for position, item in enumerate(data["items"])
+    }
+    data["summary_items"] = sorted(
+        data.get("summary_items", []),
+        key=lambda item: (
+            positions.get(int(item["item_id"]), 10**12),
+            -int(item["importance"] or 0),
+            int(item["rank"] or 0),
+        ),
+    )
+
+
 def _group_tree(connection) -> list[dict[str, Any]]:
     groups = connection.execute(
         """SELECT g.* FROM groups g
@@ -369,7 +438,7 @@ def _cluster_summary_items(rows) -> list[dict[str, Any]]:
 
 def _page_data(
     connection, config: Config, group_id: int | None, feed_id: int | None,
-    rolling_hours: int = 24, *, show_all_items: bool = False,
+    rolling_hours: int = 24,
 ) -> dict[str, Any]:
     tree = _group_tree(connection)
     all_groups = connection.execute(
@@ -481,7 +550,6 @@ def _page_data(
                  WHERE f.enabled=1 AND {where}""",
             parameters,
         ).fetchone()[0])
-        item_limit = "" if show_all_items else "LIMIT 1000"
         items = connection.execute(
             f"""SELECT i.*, f.title AS feed_title, eval.relevance AS relevance,
                        eval.justification AS relevance_justification
@@ -491,7 +559,7 @@ def _page_data(
                 FROM items i JOIN feeds f ON f.id=i.feed_id
                 LEFT JOIN ai_evaluations eval ON eval.item_id=i.id AND eval.current=1
                 WHERE f.enabled=1 AND {where}
-                ORDER BY i.is_read, COALESCE(i.published_at, i.discovered_at) DESC {item_limit}""",
+                ORDER BY COALESCE(i.published_at, i.discovered_at) DESC,i.id DESC""",
             parameters,
         ).fetchall()
         summary_feed_id = None if is_arxiv_scope else feed_id
@@ -594,7 +662,6 @@ def _page_data(
         "summary_evidence_hours": int(config.get("llm", "rolling_digest_hours", 24)),
         "scope_pending_items": scope_pending_items,
         "scope_item_count": scope_item_count,
-        "show_all_items": show_all_items,
         "scope_arxiv_error": scope_arxiv_error,
         "summary_stale": summary_stale,
         "system_notices": system_notices,
@@ -1041,13 +1108,13 @@ def create_app(config_path: str | None = None) -> Flask:
             data = _page_data(
                 connection, config, request.args.get("group", type=int), request.args.get("feed", type=int),
                 int(config.get("llm", "rolling_digest_hours")),
-                show_all_items=request.args.get("all_items") == "1",
             )
             # SQLite rows are immutable; installed plugins receive ordinary
             # dictionaries and can add presentation metadata without changing
             # the common item state model.
             data["items"] = [dict(item) for item in data["items"]]
             decorate_page(connection, config, data)
+            _order_reader_page(data)
             data["ntfy_scope"] = ntfy_scope_settings(
                 connection, int(config.get("notifications", "ntfy", {}).get(
                     "minimum_relevance", 85
@@ -1386,9 +1453,94 @@ def create_app(config_path: str | None = None) -> Flask:
             selected_tag=tag, title=title, ui=config.section("ui"),
         )
 
+    @app.get("/ranked/<ranking>")
+    def ranked_page(ranking: str):
+        """Browse global ranking results without mixing them with Saved items."""
+        if ranking not in {"ai", "arxiv"}:
+            abort(404)
+        page = max(1, request.args.get("page", default=1, type=int) or 1)
+        page_size = 100
+        configured_categories = _configured_arxiv_categories(config)
+        with connect(config.database_path) as connection:
+            if ranking == "ai":
+                title = "Top AI ranked"
+                explanation = (
+                    "Ordinary RSS and Atom articles ordered by their stored AI relevance score."
+                )
+                total = int(connection.execute(
+                    """SELECT COUNT(*) FROM items i
+                         JOIN feeds f ON f.id=i.feed_id
+                         JOIN ai_evaluations eval ON eval.item_id=i.id AND eval.current=1
+                         WHERE f.enabled=1 AND f.xml_url NOT LIKE 'plugin://%'"""
+                ).fetchone()[0])
+                page_count = max(1, (total + page_size - 1) // page_size)
+                page = min(page, page_count)
+                rows = connection.execute(
+                    """SELECT i.*,f.title AS feed_title,g.title AS group_title,
+                              eval.relevance AS rank_score,
+                              eval.justification AS rank_rationale,
+                              'AI relevance' AS rank_label,
+                              NULL AS local_score,NULL AS final_score,NULL AS primary_category
+                         FROM items i JOIN feeds f ON f.id=i.feed_id
+                         JOIN groups g ON g.id=f.group_id
+                         JOIN ai_evaluations eval ON eval.item_id=i.id AND eval.current=1
+                         WHERE f.enabled=1 AND f.xml_url NOT LIKE 'plugin://%'
+                         ORDER BY eval.relevance DESC,
+                                  COALESCE(i.published_at,i.discovered_at) DESC,i.id DESC
+                         LIMIT ? OFFSET ?""",
+                    (page_size, (page - 1) * page_size),
+                ).fetchall()
+            else:
+                title = "Top ArXiv ranked"
+                category_label = ", ".join(configured_categories) or "no configured categories"
+                explanation = (
+                    "Retained papers in the configured ArXiv categories "
+                    f"({category_label}), ordered by their specialist AI score."
+                )
+                available = bool(connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='distillfeed_arxiv_papers'"
+                ).fetchone())
+                category_sql, category_parameters = _arxiv_category_scope(
+                    configured_categories
+                )
+                if available:
+                    total = int(connection.execute(
+                        f"""SELECT COUNT(*) FROM distillfeed_arxiv_papers ap
+                             JOIN items i ON i.id=ap.item_id
+                             JOIN feeds f ON f.id=i.feed_id
+                             WHERE ap.llm_score IS NOT NULL AND {category_sql}""",
+                        category_parameters,
+                    ).fetchone()[0])
+                    page_count = max(1, (total + page_size - 1) // page_size)
+                    page = min(page, page_count)
+                    rows = connection.execute(
+                        f"""SELECT i.*,f.title AS feed_title,g.title AS group_title,
+                                  ap.llm_score AS rank_score,ap.why AS rank_rationale,
+                                  'ArXiv AI score' AS rank_label,ap.local_score,
+                                  ap.final_score,ap.primary_category
+                             FROM distillfeed_arxiv_papers ap
+                             JOIN items i ON i.id=ap.item_id
+                             JOIN feeds f ON f.id=i.feed_id
+                             JOIN groups g ON g.id=f.group_id
+                             WHERE ap.llm_score IS NOT NULL AND {category_sql}
+                             ORDER BY ap.llm_score DESC,ap.final_score DESC,
+                                      COALESCE(i.published_at,i.discovered_at) DESC,i.id DESC
+                             LIMIT ? OFFSET ?""",
+                        [*category_parameters, page_size, (page - 1) * page_size],
+                    ).fetchall()
+                else:
+                    total = 0
+                    page_count = 1
+                    rows = []
+        return render_template(
+            "ranked.html", items=rows, ranking=ranking, title=title,
+            explanation=explanation, total=total, page=page,
+            page_count=page_count, ui=config.section("ui"),
+        )
+
     @app.get("/arxiv")
     def arxiv_archive_page():
-        """Browse every retained arXiv announcement, independent of the digest."""
+        """Browse retained papers that match the current ArXiv category settings."""
         page = max(1, request.args.get("page", default=1, type=int) or 1)
         page_size = 100
         selected_status = str(request.args.get("status", "all")).strip().casefold()
@@ -1413,22 +1565,28 @@ def create_app(config_path: str | None = None) -> Flask:
         }
         if selected_sort not in sort_options:
             selected_sort = "newest"
+        configured_categories = _configured_arxiv_categories(config)
+        category_scope_sql, category_scope_parameters = _arxiv_category_scope(
+            configured_categories
+        )
         with connect(config.database_path) as connection:
             available = bool(connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='distillfeed_arxiv_papers'"
             ).fetchone())
             counts = {key: 0 for key in allowed_statuses}
             items: list[Any] = []
-            categories: list[str] = []
+            categories: list[str] = list(configured_categories)
             total = 0
             if available:
                 row = connection.execute(
-                    """SELECT COUNT(*) AS all_count,
+                    f"""SELECT COUNT(*) AS all_count,
                               SUM(ap.evaluation_status='pending') AS pending_count,
                               SUM(ap.evaluation_status='screened_out') AS screened_count,
                               SUM(ap.evaluation_status='complete' AND ap.decision='keep') AS kept_count,
                               SUM(ap.evaluation_status='complete' AND ap.decision='drop') AS dropped_count
-                         FROM distillfeed_arxiv_papers ap"""
+                         FROM distillfeed_arxiv_papers ap
+                        WHERE {category_scope_sql}""",
+                    category_scope_parameters,
                 ).fetchone()
                 counts = {
                     "all": int(row["all_count"] or 0),
@@ -1437,21 +1595,16 @@ def create_app(config_path: str | None = None) -> Flask:
                     "kept": int(row["kept_count"] or 0),
                     "dropped": int(row["dropped_count"] or 0),
                 }
-                category_names: set[str] = set()
-                for category_row in connection.execute(
-                    "SELECT categories_json,primary_category FROM distillfeed_arxiv_papers"
-                ).fetchall():
-                    category_names.update(
-                        str(value).strip() for value in _json_list(category_row["categories_json"])
-                        if str(value).strip()
-                    )
-                    if category_row["primary_category"]:
-                        category_names.add(str(category_row["primary_category"]).strip())
-                categories = sorted(category_names, key=str.casefold)
-                if selected_category not in category_names:
-                    selected_category = ""
-                conditions: list[str] = []
-                parameters: list[Any] = []
+                categories = configured_categories
+                selected_category = next(
+                    (
+                        category for category in configured_categories
+                        if category.casefold() == selected_category.casefold()
+                    ),
+                    "",
+                )
+                conditions: list[str] = [category_scope_sql]
+                parameters: list[Any] = list(category_scope_parameters)
                 status_sql = {
                     "pending": "ap.evaluation_status='pending'",
                     "screened": "ap.evaluation_status='screened_out'",
@@ -1461,8 +1614,10 @@ def create_app(config_path: str | None = None) -> Flask:
                 if selected_status != "all":
                     conditions.append(status_sql[selected_status])
                 if selected_category:
-                    conditions.append("ap.categories_json LIKE ?")
-                    parameters.append(f'%"{selected_category}"%')
+                    conditions.append(
+                        "(ap.primary_category=? OR ap.categories_json LIKE ?)"
+                    )
+                    parameters.extend((selected_category, f'%"{selected_category}"%'))
                 if query:
                     conditions.append(
                         "(i.title LIKE ? OR i.author LIKE ? OR i.description_text LIKE ? "
@@ -1471,7 +1626,7 @@ def create_app(config_path: str | None = None) -> Flask:
                     )
                     pattern = f"%{query}%"
                     parameters.extend((pattern,) * 7)
-                where = "WHERE " + " AND ".join(conditions) if conditions else ""
+                where = "WHERE " + " AND ".join(conditions)
                 total = int(connection.execute(
                     f"""SELECT COUNT(*) FROM distillfeed_arxiv_papers ap
                          JOIN items i ON i.id=ap.item_id {where}""",
@@ -1511,6 +1666,7 @@ def create_app(config_path: str | None = None) -> Flask:
             page_count=page_count, available=available, ui=config.section("ui"),
             categories=categories, selected_category=selected_category,
             selected_sort=selected_sort,
+            configured_categories=configured_categories,
         )
 
     @app.get("/api/backup")

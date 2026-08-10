@@ -148,7 +148,7 @@ wheels = [
 
 [[package]]
 name = "distillfeed"
-version = "0.23.3"
+version = "0.23.4"
 source = { editable = "." }
 dependencies = [
     { name = "defusedxml" },

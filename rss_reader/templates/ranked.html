@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="csrf-token" content="{{ csrf_token() }}">
+  <meta name="auto-refresh" content="false">
+  <meta name="item-font-size" content="{{ ui.item_font_size }}">
+  <meta name="offline-cache-enabled" content="{{ 'true' if ui.offline_cache_enabled else 'false' }}">
+  <meta name="completion-notifications" content="{{ 'true' if ui.completion_notifications else 'false' }}">
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='distillfeed-icon.svg', v='0.23.4') }}">
+  <title>{{ title }} · DistillFeed</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='0.23.4') }}">
+</head>
+<body class="summaries-page{% if ui.dark_mode %} dark-mode{% endif %}">
+  <header class="topbar page-header">
+    <a class="brand" href="/">← DistillFeed</a>
+    <strong class="page-title">{{ title }}</strong>
+    <nav class="page-actions" aria-label="Ranked article pages">
+      <a class="button-link" href="/ranked/ai">Top AI ranked</a>
+      <a class="button-link" href="/ranked/arxiv">Top ArXiv ranked</a>
+    </nav>
+  </header>
+  <main class="saved-page ranked-page">
+    <nav class="saved-navigation" aria-label="Ranking views">
+      <a class="{% if ranking == 'ai' %}selected{% endif %}" href="/ranked/ai"><span>Top AI ranked</span></a>
+      <a class="{% if ranking == 'arxiv' %}selected{% endif %}" href="/ranked/arxiv"><span>Top ArXiv ranked</span></a>
+      <aside class="settings-note">Rankings are global views, not Saved-item collections. Favoriting or adding an article to Read later remains available on each row.</aside>
+    </nav>
+    <section class="saved-results">
+      <header><div><h1>{{ title }}</h1><p class="ranked-explanation">{{ explanation }}</p></div><span>{{ total }} ranked article{% if total != 1 %}s{% endif %}</span></header>
+      <div class="saved-list">
+        {% for item in items %}<article class="item-row saved-row ranked-row{% if item.is_read %} read{% endif %}" tabindex="0" data-item-id="{{ item.id }}" data-feed-id="{{ item.feed_id }}" data-read="{{ 1 if item.is_read else 0 }}" data-starred="{{ 1 if item.is_starred else 0 }}" data-read-later="{{ 1 if item.is_read_later else 0 }}">
+          <button class="star-button{% if item.is_starred %} starred{% endif %}" data-starred="{{ 1 if item.is_starred else 0 }}" aria-label="{{ 'Remove favorite' if item.is_starred else 'Add favorite' }}">★</button>
+          <button class="read-later-button" data-read-later="{{ 1 if item.is_read_later else 0 }}" aria-label="{{ 'Remove from Read later' if item.is_read_later else 'Add to Read later' }}">▣</button>
+          <span class="item-feed">{% if ranking == 'arxiv' %}{{ item.primary_category or item.feed_title }}{% else %}{{ item.feed_title }}{% endif %}</span>
+          {% set safe_url = safe_external_url(item.url) %}{% if safe_url %}<a class="item-title" href="{{ safe_url }}" target="_blank" rel="noopener noreferrer">{{ item.title }}</a>{% else %}<span class="item-title">{{ item.title }}</span>{% endif %}
+          <span class="saved-tags ranked-score"><strong>{{ item.rank_label }} {{ item.rank_score }}/100</strong>{% if ranking == 'arxiv' %} · Local {{ item.local_score if item.local_score is not none else '—' }} · Combined {{ item.final_score if item.final_score is not none else '—' }}{% endif %}</span>
+          <button class="read-button" data-read="{{ 1 if item.is_read else 0 }}" aria-label="Toggle read status">{{ '○' if item.is_read else '●' }}</button>
+          {% if item.rank_rationale %}<details class="ranked-rationale"><summary>Ranking rationale</summary><div class="summary-markdown">{{ item.rank_rationale|summary_markup }}</div></details>{% endif %}
+        </article>{% else %}<p class="empty">No successfully ranked articles are available in this view yet.</p>{% endfor %}
+      </div>
+      {% if page_count > 1 %}<nav class="pagination" aria-label="Ranked article pages">{% if page > 1 %}<a class="button-link" href="{{ url_for('ranked_page', ranking=ranking, page=page - 1) }}">Previous</a>{% endif %}<span>Page {{ page }} of {{ page_count }}</span>{% if page < page_count %}<a class="button-link" href="{{ url_for('ranked_page', ranking=ranking, page=page + 1) }}">Next</a>{% endif %}</nav>{% endif %}
+    </section>
+  </main>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="{{ url_for('static', filename='app.js', v='0.23.4') }}" defer></script>
+</body>
+</html>

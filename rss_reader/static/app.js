@@ -1164,6 +1164,9 @@
   installFontControl('summary-font-size', '--summary-size', 'ui.summary_font_size');
 
   const itemSort = document.getElementById('item-sort');
+  const relevancePerDayControl = document.getElementById('relevance-per-day-control');
+  const relevancePerDayLimit = document.getElementById('relevance-per-day-limit');
+  const itemViewDescription = document.getElementById('item-view-description');
   const itemDayFormatter = new Intl.DateTimeFormat(undefined, { day: '2-digit', month: '2-digit' });
   const itemDetailDateFormatter = new Intl.DateTimeFormat(undefined, {
     day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
@@ -1188,24 +1191,59 @@
     const summaryList = document.getElementById('summary-item-list');
     const itemList = document.querySelector('.item-list');
     if (!summaryList || !itemList) return;
-    const positions = new Map(
-      [...itemList.querySelectorAll('.item-row')].map((row, index) => [row.dataset.itemId, index])
+    const rows = [...itemList.querySelectorAll('.item-row')];
+    const positions = new Map(rows.map((row, index) => [row.dataset.itemId, index]));
+    const visiblePositions = new Map(
+      rows.filter(row => !row.hidden).map((row, index) => [row.dataset.itemId, index])
     );
     const entries = [...summaryList.querySelectorAll('[data-summary-item-id]')];
     entries.sort((left, right) => {
-      const leftPosition = positions.get(left.dataset.summaryItemId);
-      const rightPosition = positions.get(right.dataset.summaryItemId);
-      return (leftPosition ?? Number.MAX_SAFE_INTEGER) - (rightPosition ?? Number.MAX_SAFE_INTEGER);
+      const leftVisible = visiblePositions.get(left.dataset.summaryItemId);
+      const rightVisible = visiblePositions.get(right.dataset.summaryItemId);
+      if (leftVisible !== undefined || rightVisible !== undefined) {
+        return (leftVisible ?? Number.MAX_SAFE_INTEGER) - (rightVisible ?? Number.MAX_SAFE_INTEGER);
+      }
+      return (positions.get(left.dataset.summaryItemId) ?? Number.MAX_SAFE_INTEGER)
+        - (positions.get(right.dataset.summaryItemId) ?? Number.MAX_SAFE_INTEGER);
     });
     entries.forEach(entry => {
+      const visiblePosition = visiblePositions.get(entry.dataset.summaryItemId);
       const position = positions.get(entry.dataset.summaryItemId);
+      const row = position === undefined ? null : rows[position];
       const badge = entry.querySelector('.summary-item-position');
       if (badge) {
-        badge.textContent = position === undefined ? 'Not in this item view' : `Item ${position + 1}`;
-        badge.setAttribute('aria-label', position === undefined ? 'Not present in the current item panel' : `Position ${position + 1} in the item panel`);
+        if (visiblePosition !== undefined) {
+          badge.textContent = `Item ${visiblePosition + 1}`;
+          badge.setAttribute('aria-label', `Visible position ${visiblePosition + 1} in the item panel`);
+        } else if (row?.dataset.perDayVisible === '0') {
+          badge.textContent = 'Outside the current per-day limit';
+          badge.setAttribute('aria-label', 'Hidden by the current AI results per day setting');
+        } else if (position !== undefined) {
+          badge.textContent = 'Hidden by the current item filter';
+          badge.setAttribute('aria-label', 'Present in the item panel but hidden by its search or state filter');
+        } else {
+          badge.textContent = 'Not in this item view';
+          badge.setAttribute('aria-label', 'Not present in the current item panel');
+        }
       }
       summaryList.appendChild(entry);
     });
+  }
+  function selectedPerDayLimit() {
+    if (!relevancePerDayLimit || relevancePerDayLimit.value === 'all') return Number.POSITIVE_INFINITY;
+    const value = Number(relevancePerDayLimit.value);
+    return [10, 25, 50].includes(value) ? value : 25;
+  }
+  function updateItemViewControls(mode) {
+    const relevance = mode === 'relevance';
+    if (relevancePerDayControl) relevancePerDayControl.hidden = !relevance;
+    if (!itemViewDescription) return;
+    const choice = relevancePerDayLimit?.value || '25';
+    itemViewDescription.textContent = relevance
+      ? choice === 'all'
+        ? 'All AI-ranked articles for every stored day'
+        : `Top ${choice} AI-ranked articles for each stored day`
+      : 'All articles for every stored day';
   }
   function sortItems(mode) {
     const list = document.querySelector('.item-list'); if (!list) return;
@@ -1223,8 +1261,15 @@
     const fragment = document.createDocumentFragment();
     let group;
     let previousKey;
+    const dayRanks = new Map();
+    const perDayLimit = mode === 'relevance' ? selectedPerDayLimit() : Number.POSITIVE_INFINITY;
     rows.forEach(row => {
       const day = itemDay(row);
+      const dayRank = (dayRanks.get(day.key) || 0) + 1;
+      dayRanks.set(day.key, dayRank);
+      row.dataset.dayRank = String(dayRank);
+      row.dataset.perDayVisible = dayRank <= perDayLimit ? '1' : '0';
+      row.hidden = row.dataset.perDayVisible === '0';
       if (day.key !== previousKey) {
         group = document.createElement('section');
         group.className = 'item-day-group'; group.dataset.dayKey = day.key; group.dataset.dayLabel = day.label;
@@ -1237,15 +1282,31 @@
     });
     oldGroups.forEach(existing => existing.remove());
     list.appendChild(fragment);
+    updateItemViewControls(mode);
     updateDateGroupVisibility();
     syncSummaryOrder();
   }
   if (itemSort) {
     const profile = document.querySelector('.item-list')?.dataset.sortProfile || 'date';
     const storageKey = `rssItemSort:${profile}`;
-    itemSort.value = localStorage.getItem(storageKey) || profile;
+    const perDayStorageKey = `rssItemPerDay:${profile}`;
+    const storedSort = localStorage.getItem(storageKey) || profile;
+    itemSort.value = storedSort === 'relevance' ? 'relevance' : 'date';
+    if (relevancePerDayLimit) {
+      const storedLimit = localStorage.getItem(perDayStorageKey) || '25';
+      relevancePerDayLimit.value = ['10', '25', '50', 'all'].includes(storedLimit) ? storedLimit : '25';
+      relevancePerDayLimit.addEventListener('change', () => {
+        localStorage.setItem(perDayStorageKey, relevancePerDayLimit.value);
+        sortItems(itemSort.value);
+        applyItemFilters();
+      });
+    }
     sortItems(itemSort.value);
-    itemSort.addEventListener('change', () => { localStorage.setItem(storageKey, itemSort.value); sortItems(itemSort.value); });
+    itemSort.addEventListener('change', () => {
+      localStorage.setItem(storageKey, itemSort.value);
+      sortItems(itemSort.value);
+      applyItemFilters();
+    });
   }
 
   document.querySelectorAll('.item-detail-date').forEach(time => {
@@ -1293,7 +1354,8 @@
       const searchable = `${row.textContent} ${row.dataset.tags || ''}`.toLocaleLowerCase();
       const matchesText = !query || searchable.includes(query);
       const matchesState = mode === 'all' || (mode === 'unread' && row.dataset.read === '0') || (mode === 'starred' && row.dataset.starred === '1') || (mode === 'read-later' && row.dataset.readLater === '1');
-      row.hidden = !(matchesText && matchesState);
+      const matchesPerDayLimit = row.dataset.perDayVisible !== '0';
+      row.hidden = !(matchesText && matchesState && matchesPerDayLimit);
       if (!row.hidden) visible += 1;
     });
     updateDateGroupVisibility();
@@ -1311,6 +1373,12 @@
   document.querySelectorAll('.summary-locate-item').forEach(button => button.addEventListener('click', () => {
     const row = [...document.querySelectorAll('.item-row')].find(candidate => candidate.dataset.itemId === button.dataset.itemId);
     if (!row) { notify('This article is not present in the current item panel.'); return; }
+    if (row.dataset.perDayVisible === '0' && relevancePerDayLimit && itemSort?.value === 'relevance') {
+      relevancePerDayLimit.value = 'all';
+      const profile = document.querySelector('.item-list')?.dataset.sortProfile || 'date';
+      localStorage.setItem(`rssItemPerDay:${profile}`, 'all');
+      sortItems(itemSort.value);
+    }
     if (itemSearch) itemSearch.value = '';
     if (itemFilter) itemFilter.value = 'all';
     applyItemFilters();

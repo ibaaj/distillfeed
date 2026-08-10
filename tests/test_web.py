@@ -114,7 +114,7 @@ def test_item_details_date_hierarchy_and_portable_exports(configured):
     summaries = client.get("/summaries")
     assert b"Print / PDF" in summaries.data
     assert b'aria-label="Print or save summaries as PDF"' in summaries.data
-    assert b"summary.js?v=0.23.3" in summaries.data
+    assert b"summary.js?v=0.23.4" in summaries.data
 
 
 def test_standalone_page_headers_keep_actions_compact(configured):
@@ -129,7 +129,7 @@ def test_standalone_page_headers_keep_actions_compact(configured):
     assert b".page-header .button-link { width: auto;" in stylesheet
 
 
-def test_item_panel_can_expand_from_latest_thousand_to_every_stored_date(configured):
+def test_item_panel_always_loads_stored_dates_and_caps_only_ai_relevance_per_day(configured):
     with connect(configured.database_path) as connection:
         group_id = connection.execute(
             "INSERT INTO groups(title,position,created_at) VALUES('Archive',0,?)", (utcnow(),)
@@ -147,12 +147,60 @@ def test_item_panel_can_expand_from_latest_thousand_to_every_stored_date(configu
             ],
         )
     client = create_app(str(configured.path)).test_client()
-    recent = client.get(f"/?feed={feed_id}")
-    assert recent.data.count(b'class="item-row') == 1000
-    assert b"Show all stored items \xc2\xb7 every date" in recent.data
-    complete = client.get(f"/?feed={feed_id}&all_items=1")
-    assert complete.data.count(b'class="item-row') == 1002
-    assert b"Show latest 1,000 items" in complete.data
+    page = client.get(f"/?feed={feed_id}")
+    assert page.data.count(b'class="item-row') == 1002
+    assert b"Show all stored items" not in page.data
+    assert b"Show latest 1,000 items" not in page.data
+    assert b'id="relevance-per-day-control" hidden' in page.data
+    assert b'id="relevance-per-day-limit"' in page.data
+    for label in (b"Top 10", b"Top 25", b"Top 50", b"All ranked articles"):
+        assert label in page.data
+    script = client.get("/static/app.js").data
+    assert b"row.dataset.perDayVisible" in script
+    assert b"mode === 'relevance' ? selectedPerDayLimit()" in script
+    assert b"matchesPerDayLimit" in script
+    assert b"All articles for every stored day" in script
+
+
+def test_top_ai_ranked_is_a_global_page_and_not_a_saved_collection(configured):
+    with connect(configured.database_path) as connection:
+        group_id = connection.execute(
+            "INSERT INTO groups(title,position,created_at) VALUES('Ranked sources',0,?)",
+            (utcnow(),),
+        ).lastrowid
+        feed_id = connection.execute(
+            "INSERT INTO feeds(group_id,title,xml_url,created_at) VALUES(?,?,?,?)",
+            (group_id, "Ranked feed", "https://example.test/ranked.xml", utcnow()),
+        ).lastrowid
+        item_id = connection.execute(
+            """INSERT INTO items(feed_id,stable_id,title,url,discovered_at)
+               VALUES(?,?,?,?,?)""",
+            (feed_id, "ranked-one", "Highest ordinary result", "https://example.test/one", utcnow()),
+        ).lastrowid
+        run_id = connection.execute(
+            """INSERT INTO llm_runs(
+                   request_key,started_at,completed_at,status,model,prompt_version,pricing_json
+               ) VALUES('rank-page',?,?,'success','model','evaluation','{}')""",
+            (utcnow(), utcnow()),
+        ).lastrowid
+        connection.execute(
+            """INSERT INTO ai_evaluations(
+                   item_id,llm_run_id,policy_hash,model,language,relevance,
+                   description,justification,story_cluster,current,created_at
+               ) VALUES(?,?,'policy','model','English',97,'Description',
+                        'Highly relevant to the configured interests','topic',1,?)""",
+            (item_id, run_id, utcnow()),
+        )
+
+    client = create_app(str(configured.path)).test_client()
+    page = client.get("/ranked/ai")
+    assert page.status_code == 200
+    assert b"Top AI ranked" in page.data
+    assert b"Highest ordinary result" in page.data
+    assert b"AI relevance 97/100" in page.data
+    assert b"Highly relevant to the configured interests" in page.data
+    assert b"Rankings are global views, not Saved-item collections" in page.data
+    assert client.get("/ranked/not-a-ranking").status_code == 404
 
 
 def test_optional_basic_auth_rejects_missing_and_accepts_configured_password(configured, monkeypatch):
@@ -221,9 +269,11 @@ def test_page_and_subscription_mutations(configured, monkeypatch):
     assert b'href="/saved?view=favorites"' in page.data
     assert b'href="/saved?view=read-later"' in page.data
     assert b'href="/saved?view=tags"' in page.data
+    assert b'href="/ranked/ai">Top AI ranked</a>' in page.data
+    assert b'href="/ranked/arxiv">Top ArXiv ranked</a>' in page.data
     assert b'href="/saved?view=ai-ranked"' not in page.data
     assert b'href="/saved?view=arxiv-ranked"' not in page.data
-    assert b'>Browse all arXiv papers</a>' in page.data
+    assert b'>Browse all ArXiv papers</a>' in page.data
     assert b"DistillFeed" in page.data
     assert b"Paris" in page.data
     assert b"Checkboxes affect LLM summaries only" not in page.data
@@ -656,7 +706,7 @@ def test_mobile_layers_narrow_pane_controls_and_favicon_are_bounded(configured):
     assert b'class="nav-menu main-menu"' in page.data
     assert b'<span class="toolbar-label">Menu</span>' in page.data
     assert b'class="action-menu scope-actions"' in page.data
-    favicon = b'<link rel="icon" type="image/svg+xml" href="/static/distillfeed-icon.svg?v=0.23.3">'
+    favicon = b'<link rel="icon" type="image/svg+xml" href="/static/distillfeed-icon.svg?v=0.23.4">'
     for path in ("/", "/summaries", "/history", "/health", "/notifications", "/costs", "/saved?view=favorites"):
         response = client.get(path)
         assert response.status_code == 200
@@ -732,7 +782,7 @@ def test_settings_contain_ai_source_and_queue_transitions_without_external_subme
 
 def test_service_worker_revalidates_shell_and_never_caches_api(configured):
     worker = create_app(str(configured.path)).test_client().get("/static/service-worker.js").data
-    assert b"distillfeed-v18" in worker
+    assert b"distillfeed-v19" in worker
     assert b"url.pathname.startsWith('/api/')" in worker
     assert b"fetch(event.request, { cache: 'no-cache' })" in worker
     assert b"caches.match(event.request).then(cached => cached || fetch(event.request))" not in worker
@@ -1275,7 +1325,7 @@ def test_all_summaries_page_contains_active_feed_summary(configured):
     assert f'data-summary-item-id="{second_item_id}"'.encode() in reader_page.data
     assert f'class="summary-locate-item" type="button" data-item-id="{second_item_id}"'.encode() in reader_page.data
     assert b'id="summary-item-list"' in reader_page.data
-    assert b"In the same order as the item panel" in reader_page.data
+    assert b"follows the visible item-panel order" in reader_page.data
     script = app.test_client().get("/static/app.js").data
     assert b"function syncSummaryOrder()" in script
     assert b"syncSummaryOrder();" in script

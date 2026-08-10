@@ -148,6 +148,8 @@ body.reader-page > .layout { flex: 1 1 auto; height: auto; min-height: 0; }
 .item-controls { flex-wrap: wrap; justify-content: flex-end; font-weight: normal; }
 .item-controls select { max-width: 125px; }
 .item-controls input, .pane-tools input { width: 80px; }
+.item-controls [hidden] { display: none; }
+.item-view-description { max-width: 190px; font-size: 11px; line-height: 1.25; text-align: right; }
 .item-list { flex: 1; min-height: 0; overflow: auto; padding-bottom: env(safe-area-inset-bottom); }
 .item-day-group[hidden] { display: none; }
 .item-day-heading {
@@ -403,9 +405,11 @@ dialog .checkbox-label { display: flex; align-items: center; gap: 8px; } dialog 
 .arxiv-search { display: flex; align-items: end; gap: 8px; margin: 0 0 16px; }
 .arxiv-search label { flex: 1; display: grid; gap: 5px; color: var(--muted); font-size: 12px; }
 .arxiv-search input { width: 100%; }
-.arxiv-browser-controls { display: grid; grid-template-columns: minmax(240px, 2fr) repeat(3, minmax(145px, 1fr)) auto auto; align-items: end; padding: 14px 18px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--surface) 65%, var(--bg)); }
+.arxiv-browser-controls { display: grid; grid-template-columns: minmax(240px, 2fr) repeat(3, minmax(145px, 1fr)) auto; align-items: end; padding: 14px 18px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--surface) 65%, var(--bg)); }
 .arxiv-browser-controls label { min-width: 0; margin: 0; }.arxiv-browser-controls input,.arxiv-browser-controls select { min-width: 0; width: 100%; }
 .arxiv-browser-controls button,.arxiv-browser-controls .button-link { min-height: 36px; display: inline-flex; align-items: center; justify-content: center; padding: 7px 11px; }
+.arxiv-browser-actions { display: inline-flex; align-items: center; gap: 5px; justify-self: start; }
+.arxiv-browser-controls .arxiv-apply-button,.arxiv-browser-controls .arxiv-reset-button { width: auto; min-height: 30px; padding: 4px 9px; font-size: 11px; line-height: 1; }
 .arxiv-paper-details { grid-column: 1 / -1; margin: 2px 4px 6px 72px; border: 1px solid var(--border); border-radius: 8px; background: color-mix(in srgb, var(--surface) 72%, var(--bg)); }
 .arxiv-paper-details > summary { cursor: pointer; padding: 8px 10px; color: var(--accent); font-size: 12px; font-weight: 650; }
 .arxiv-paper-details[open] > summary { border-bottom: 1px solid var(--border); }
@@ -419,6 +423,10 @@ dialog .checkbox-label { display: flex; align-items: center; gap: 8px; } dialog 
 .saved-row { grid-template-columns: 30px 30px minmax(100px, 18%) minmax(0, 1fr) minmax(80px, 20%) 30px; padding-left: 12px; padding-right: 12px; }
 .read-later-button { border: 0; background: transparent; color: var(--muted); padding: 4px; }.read-later-button.active, .read-later-button[data-read-later="1"] { color: var(--accent); }
 .saved-tags { overflow: hidden; color: var(--muted); font-size: .8em; text-overflow: ellipsis; white-space: nowrap; }
+.ranked-explanation { margin: 3px 0 0; color: var(--muted); font-size: 12px; font-weight: normal; }
+.ranked-rationale { grid-column: 3 / -1; margin-top: 2px; border-top: 1px solid var(--border); padding-top: 6px; color: var(--muted); font-size: 12px; }
+.ranked-rationale > summary { cursor: pointer; color: var(--accent); font-weight: 650; }
+.ranked-rationale > div { margin-top: 6px; color: var(--text); }
 
 .primary-page-action { border-color: var(--accent) !important; background: var(--accent) !important; color: #fff !important; }
 .ai-policy-page { overflow: hidden; }

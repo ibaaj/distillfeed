@@ -241,7 +241,7 @@ def test_neutral_plugin_is_installed_but_disabled_and_discloses_no_profile(confi
     assert not (configured.path.parent / "arxiv-digest.toml").exists()
 
     client = create_app(str(configured.path)).test_client()
-    page = client.get("/ai")
+    page = client.get("/?settings=arxiv")
     assert page.status_code == 200
     assert b'data-config-path="plugins.arxiv_digest_enabled"' in page.data
     assert b'data-config-path="plugin.arxiv_digest.arxiv.categories"' in page.data
@@ -284,7 +284,7 @@ def test_settings_enable_configure_disable_and_reenable_preserves_history(config
                VALUES(?, 'preserved-paper', 'Preserved paper', datetime('now'), 0)""",
             (feed_id,),
         ).lastrowid)
-    assert b'data-config-path="plugin.arxiv_digest.arxiv.categories"' in client.get("/ai").data
+    assert b'data-config-path="plugin.arxiv_digest.arxiv.categories"' in client.get("/?settings=arxiv").data
     with connect(configured.database_path) as connection:
         portable = serialize_opml(build_tree_from_database(connection))
     exported = parse_opml_bytes(portable)
@@ -325,7 +325,7 @@ def test_settings_enable_configure_disable_and_reenable_preserves_history(config
         assert connection.execute("SELECT 1 FROM items WHERE id=?", (item_id,)).fetchone()
         assert all(node["title"] != "arXiv Digest" for node in _group_tree(connection))
         assert refresh_plugins(connection, load_config(configured.path))["plugins"] == []
-    disabled_page = client.get("/ai")
+    disabled_page = client.get("/?settings=arxiv")
     assert b'data-config-path="plugins.arxiv_digest_enabled"' in disabled_page.data
     assert b'data-config-path="plugin.arxiv_digest.arxiv.categories"' in disabled_page.data
 
@@ -448,7 +448,7 @@ def test_previously_seen_only_paper_is_restored_to_browseable_archive(configured
     connection.close()
 
 
-def test_all_arxiv_archive_exposes_every_screening_state(configured):
+def test_arxiv_archive_and_rankings_follow_configured_category_scope(configured):
     configured.data["plugins"]["arxiv_digest_enabled"] = True
     save_config(configured)
     with connect(configured.database_path) as connection:
@@ -492,25 +492,39 @@ def test_all_arxiv_archive_exposes_every_screening_state(configured):
             )
 
     client = create_app(str(configured.path)).test_client()
+    reader = client.get(f"/?feed={feed_id}")
+    assert b'data-sort-profile="relevance"' in reader.data
+    assert b'id="relevance-per-day-limit"' in reader.data
     all_page = client.get("/arxiv")
     assert all_page.status_code == 200
     assert b"All fetched papers" in all_page.data
     assert b"Locally screened out" in all_page.data
-    assert all_page.data.count(b'class="item-row saved-row"') == 4
+    assert all_page.data.count(b'class="item-row saved-row"') == 3
+    assert b"All configured categories" in all_page.data
+    assert b"cs.AI" in all_page.data
+    assert b"cs.LO" not in all_page.data
     kept = client.get("/arxiv?status=kept")
     assert kept.data.count(b'class="item-row saved-row"') == 1
     assert b"AI kept" in kept.data and b"96" in kept.data
     searched = client.get("/arxiv?q=2608.10002")
     assert searched.data.count(b'class="item-row saved-row"') == 1
-    assert client.get("/arxiv?q=proof-search").data.count(b'class="item-row saved-row"') == 1
-    assert client.get("/arxiv?q=Unique+rationale").data.count(b'class="item-row saved-row"') == 1
+    assert client.get("/arxiv?q=proof-search").data.count(b'class="item-row saved-row"') == 0
+    assert client.get("/arxiv?q=Unique+rationale").data.count(b'class="item-row saved-row"') == 0
     logic = client.get("/arxiv?category=cs.LO")
-    assert logic.data.count(b'class="item-row saved-row"') == 1
-    assert b"Ada Logician" in logic.data and b"Unique proof-search abstract" in logic.data
+    assert logic.data.count(b'class="item-row saved-row"') == 3
+    assert b"Ada Logician" not in logic.data and b"Unique proof-search abstract" not in logic.data
     sorted_ai = client.get("/arxiv?sort=ai-high")
     assert sorted_ai.data.index(b"Archive paper 2") < sorted_ai.data.index(b"Archive paper 3")
     assert b"Combined score" in sorted_ai.data
     assert b"Abstract, authors, categories, and ranking rationale" in sorted_ai.data
+    top_ranked = client.get("/ranked/arxiv")
+    assert top_ranked.status_code == 200
+    assert b"Top ArXiv ranked" in top_ranked.data
+    assert b"Archive paper 2" in top_ranked.data
+    assert b"Archive paper 1" not in top_ranked.data
+    stylesheet = client.get("/static/app.css").data
+    assert b".arxiv-browser-controls .arxiv-apply-button" in stylesheet
+    assert b"min-height: 30px" in stylesheet
 
 
 def test_same_day_late_evidence_creates_append_only_digest_revision(configured, monkeypatch):
