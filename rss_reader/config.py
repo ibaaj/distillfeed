@@ -47,7 +47,7 @@ DEFAULTS: dict[str, Any] = {
         "initial_import_max_age_days": 30,
         "max_workers": 8,
         "max_workers_per_host": 2,
-        "user_agent": "DistillFeed/0.23.1 (+private single-user feed reader)",
+        "user_agent": "DistillFeed/0.23.2 (+private single-user feed reader)",
         "allow_private_urls": False,
         "generated_feed_directory": "",
         "retry_base_minutes": 15,

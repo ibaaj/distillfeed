@@ -57,7 +57,7 @@ def _credential_blocker(environment_name: str, workflows: str) -> dict[str, Any]
             f"{environment_name} is not available to the DistillFeed server. "
             f"{workflows} cannot call OpenAI until the variable is set and the server is restarted."
         ),
-        "action_url": "/ai#profile",
+        "action_url": "/?settings=ai-provider",
         "action_label": "Review AI setup",
         "environment": environment_name,
     }
@@ -80,7 +80,7 @@ def ordinary_readiness(
         blockers.append({
             "code": "AI_DISABLED",
             "message": "Ordinary AI summaries are disabled in Model & writing.",
-            "action_url": "/ai#profile",
+            "action_url": "/?settings=ai",
             "action_label": "Enable AI summaries",
         })
     elif provider == "openai":
@@ -96,7 +96,7 @@ def ordinary_readiness(
                 f"This update is estimated at ${estimated:.4f}, but only "
                 f"${float(budget['remaining_usd'] or 0):.4f} remains in the local monthly budget."
             ),
-            "action_url": "/ai#profile",
+            "action_url": "/?settings=ai-provider",
             "action_label": "Review budget",
         })
     elif budget["warning"]:
@@ -119,7 +119,7 @@ def ordinary_readiness(
                 f"{int(plan['deferred_count'])} ready entries will remain queued after the "
                 f"next update{f'; about {cycles} cycles are needed' if cycles > 1 else ''}."
             ),
-            "action_url": "/ai#overview",
+            "action_url": "/?settings=ai",
             "action_label": "Review next update",
         })
     return {
@@ -177,7 +177,7 @@ def arxiv_readiness(connection, config: Config, *, require_enabled: bool = True)
         blockers.append({
             "code": "ARXIV_DISABLED",
             "message": "The arXiv daily digest is disabled.",
-            "action_url": "/ai#arxiv",
+            "action_url": "/?settings=arxiv",
             "action_label": "Enable arXiv digest",
         })
     try:
@@ -189,7 +189,7 @@ def arxiv_readiness(connection, config: Config, *, require_enabled: bool = True)
             "status": "blocked", "can_start": False, "enabled": enabled,
             "blockers": [{
                 "code": "ARXIV_CONFIG_INVALID", "message": str(exc)[:1000],
-                "action_url": "/ai#arxiv", "action_label": "Review arXiv settings",
+                "action_url": "/?settings=arxiv", "action_label": "Review arXiv settings",
             }],
             "warnings": [], "plan": {},
             "budget": budget_snapshot(connection, config),
@@ -198,7 +198,7 @@ def arxiv_readiness(connection, config: Config, *, require_enabled: bool = True)
         blockers.append({
             "code": "ARXIV_AI_DISABLED",
             "message": "arXiv papers are waiting, but AI ranking and digest writing are disabled.",
-            "action_url": "/ai#arxiv",
+            "action_url": "/?settings=arxiv",
             "action_label": "Enable arXiv AI",
         })
     if enabled:
@@ -216,7 +216,7 @@ def arxiv_readiness(connection, config: Config, *, require_enabled: bool = True)
                 f"The pending arXiv digest is estimated at "
                 f"${float(plan.get('estimated_cost_usd', 0)):.4f}, above the local budget remainder."
             ),
-            "action_url": "/ai#profile", "action_label": "Review budget",
+            "action_url": "/?settings=ai-provider", "action_label": "Review budget",
         })
     return {
         "status": "blocked" if blockers else "warning" if warnings else "ready",

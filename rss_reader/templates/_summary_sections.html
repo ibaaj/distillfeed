@@ -1,0 +1,14 @@
+<div class="digest-sections">
+  {% for section in sections %}
+    <section class="digest-section">
+      <h3>{% if show_group_titles|default(false) and section.group_title %}{{ section.group_title }} · {% endif %}{{ section.heading }}</h3>
+      <div class="digest-section-body">
+        {% for block in section.blocks %}
+          {% if block.kind == 'list' %}<ul class="digest-list">{% for item in block['items'] %}<li>{{ item }}</li>{% endfor %}</ul>
+          {% else %}<p>{{ block.text }}</p>{% endif %}
+        {% endfor %}
+        {% if section.paper_items %}<ul class="digest-paper-list">{% for paper in section.paper_items %}<li><strong>{% if paper.arxiv_id %}<span class="digest-paper-id">{{ paper.arxiv_id }}</span> · {% endif %}{{ paper.title }}</strong>{% if paper.rationale %}<p>{{ paper.rationale }}</p>{% endif %}</li>{% endfor %}</ul>{% endif %}
+      </div>
+    </section>
+  {% endfor %}
+</div>

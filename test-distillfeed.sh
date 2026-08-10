@@ -11,7 +11,7 @@ set -Eeuo pipefail
 # AI calls are separate, explicit opt-ins; the default run only uses mocked
 # network responses from the test suite and loopback HTTP health requests.
 
-EXPECTED_VERSION="0.23.1"
+EXPECTED_VERSION="0.23.2"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 ARCHIVE="${ARCHIVE:-$SCRIPT_DIR/distillfeed-$EXPECTED_VERSION.tar.gz}"
 TEST_TMPDIR="${TEST_TMPDIR:-${TMPDIR:-/tmp}}"

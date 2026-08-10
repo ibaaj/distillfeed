@@ -24,7 +24,7 @@ from .db import group_descendant_ids, transaction, utcnow
 
 LOGGER = logging.getLogger(__name__)
 EVALUATION_PROMPT_VERSION = "distillfeed-evaluation-2"
-COMPOSITION_PROMPT_VERSION = "distillfeed-summary-2"
+COMPOSITION_PROMPT_VERSION = "distillfeed-summary-3"
 
 
 class ProviderResponseError(ValueError):
@@ -175,7 +175,8 @@ def _composition_instructions(snapshot: dict[str, Any], scope_title: str) -> str
 Use only the supplied evaluated feed entries. Never imply that linked webpages were opened.
 Group related developments into concise, enjoyable sections. Prefer concrete information over generic commentary.
 The changes field briefly explains material differences from the previous summary. Return an empty string when no previous summary is supplied.
-Use at most four sections. Do not mention internal queue, model, prompt, or policy terminology."""
+Use at most four sections. Write plain text only: no Markdown headings, bullets, emphasis markers, or HTML.
+Keep each section body to one or two short paragraphs. Do not mention internal queue, model, prompt, or policy terminology."""
 
 
 def _start_provider_run(

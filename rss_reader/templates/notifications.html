@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="csrf-token" content="{{ csrf_token() }}">
-  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='distillfeed-icon.svg', v='0.23.1') }}">
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='distillfeed-icon.svg', v='0.23.2') }}">
   <title>System notices · DistillFeed</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='0.23.1') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='0.23.2') }}">
 </head>
 <body class="summaries-page{% if ui.dark_mode %} dark-mode{% endif %}">
   <header class="topbar page-header">
@@ -47,7 +47,7 @@
 
     <section class="notification-section" id="ai-capacity">
       <h2>AI summary activity</h2>
-      <p class="page-intro">The complete waiting list, next update plan and source priorities are available in <a href="/ai#queue">AI summaries</a>.</p>
+      <p class="page-intro">The complete waiting list, next update plan and source priorities are available inside <a href="/?settings=ai">AI summary settings</a>.</p>
       {% if latest_llm and latest_llm.status == 'failed' %}
         <ul class="notification-list"><li class="notification-error"><strong>The latest AI run failed.</strong><small>{{ display_ai_error(latest_llm.error) if latest_llm.error else 'No provider detail was stored.' }}</small></li></ul>
       {% elif latest_llm and latest_llm.error %}
@@ -55,7 +55,7 @@
       {% endif %}
       <ul class="notification-list">
         {% for group in backlog %}
-          <li><a href="/ai?group_id={{ group.group_id }}#queue"><strong>{{ group.group_title }}</strong></a><small>{{ group.item_count }} entr{% if group.item_count == 1 %}y is{% else %}ies are{% endif %} ready for an AI update.</small></li>
+          <li><a href="/?settings=ai&group={{ group.group_id }}"><strong>{{ group.group_title }}</strong></a><small>{{ group.item_count }} entr{% if group.item_count == 1 %}y is{% else %}ies are{% endif %} ready for an AI update.</small></li>
         {% else %}
           <li><strong>No eligible items are currently waiting.</strong></li>
         {% endfor %}
@@ -117,6 +117,6 @@
     </section>
   </main>
   <div id="toast" role="status" aria-live="polite"></div>
-  <script src="{{ url_for('static', filename='notifications.js', v='0.23.1') }}" defer></script>
+  <script src="{{ url_for('static', filename='notifications.js', v='0.23.2') }}" defer></script>
 </body>
 </html>

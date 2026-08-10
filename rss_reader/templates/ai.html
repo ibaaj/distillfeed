@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="csrf-token" content="{{ csrf_token() }}">
-  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='distillfeed-icon.svg', v='0.23.1') }}">
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='distillfeed-icon.svg', v='0.23.2') }}">
   <title>AI summaries · DistillFeed</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='0.23.1') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='0.23.2') }}">
 </head>
 <body class="summaries-page ai-policy-page{% if ui.dark_mode %} dark-mode{% endif %}" data-job-running="{{ 'true' if 'summary-update' in locks or 'llm-summary' in locks or 'feed-refresh' in locks else 'false' }}">
   <header class="topbar page-header">
@@ -25,18 +25,8 @@
       <button data-ai-panel="sources" type="button"><span>☷</span><span><strong>Sources</strong><small>Mode and priority</small></span><b>›</b></button>
       <button data-ai-panel="automation" type="button"><span>↻</span><span><strong>Automation</strong><small>Server schedule</small></span><b>›</b></button>
       <button data-ai-panel="profile" type="button"><span>Aa</span><span><strong>Model & writing</strong><small>Provider, language, interests</small></span><b>›</b></button>
-      {% if arxiv_available %}<button data-ai-panel="arxiv" type="button"><span>α</span><span><strong>arXiv daily digest</strong><small>{{ 'Separate daily workflow' if arxiv_enabled else 'Off · optional specialist workflow' }}</small></span><b>›</b></button>{% endif %}
       <button data-ai-panel="advanced" type="button"><span>•••</span><span><strong>Advanced</strong><small>Request safeguards</small></span><b>›</b></button>
     </nav>
-
-    {% macro arxiv_input(field) %}
-      <label class="settings-field{% if field.widget is defined and field.widget == 'textarea' %} settings-field-wide{% endif %}"><span>{{ field.label }}</span>
-      {% if field.options is defined %}<select data-config-path="{{ field.path }}" data-type="str">{% for option in field.options %}<option value="{{ option }}" {% if field.value == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select>
-      {% elif field.type == 'bool' %}<input class="settings-switch" data-config-path="{{ field.path }}" data-type="bool" type="checkbox" role="switch" {% if field.value %}checked{% endif %}>
-      {% elif field.widget is defined and field.widget == 'textarea' %}<textarea data-config-path="{{ field.path }}" data-type="str" rows="{{ field.rows or 5 }}">{{ field.value }}</textarea>
-      {% elif field.type in ('int','float') %}<input data-config-path="{{ field.path }}" data-type="{{ field.type }}" type="number" step="{% if field.type == 'float' %}any{% else %}1{% endif %}" value="{{ field.value }}">
-      {% else %}<input data-config-path="{{ field.path }}" data-type="str" value="{{ field.value }}">{% endif %}</label>
-    {% endmacro %}
 
     <form id="ai-config-form" class="ai-policy-content">
       <p id="ai-status" class="settings-status" role="status" aria-live="polite"></p>
@@ -109,7 +99,6 @@
 
       <section class="ai-policy-panel" data-ai-content="automation">
         <header><h1>Automation</h1><p>The server schedule works while the browser is closed. At each due time it checks feeds. If AI updates are enabled below, it then evaluates ready entries, publishes affected summaries, and finally sends duplicate-safe ntfy device alerts.</p></header>
-        {% if arxiv_available %}<aside class="ai-explanation"><strong>arXiv stays separate</strong><span>When the arXiv daily digest is enabled, the same scheduled cycle checks it independently. Its model runs only when a new arXiv announcement is waiting, and it publishes at most one combined digest for that announcement.</span></aside>{% endif %}
         <div class="settings-grid ai-settings-group">
           <label class="settings-field"><span>Server schedule</span><input class="settings-switch" data-config-path="app.background_scheduler_enabled" data-type="bool" type="checkbox" role="switch" {% if app.background_scheduler_enabled %}checked{% endif %}></label>
           <label class="settings-field"><span>Update summaries after checking feeds</span><input class="settings-switch" data-config-path="app.auto_summarize_after_refresh" data-type="bool" type="checkbox" role="switch" {% if app.auto_summarize_after_refresh %}checked{% endif %}></label>
@@ -118,7 +107,7 @@
       </section>
 
       <section class="ai-policy-panel" data-ai-content="profile">
-        <header><h1>Model & writing</h1><p>These settings govern ordinary feed summaries. New settings are frozen at the start of the next update. Successful existing scores are retained; only the summary composition is rebuilt from current eligible evidence. The separate arXiv digest has its own recipe.</p></header>
+        <header><h1>Model & writing</h1><p>These settings govern ordinary feed summaries. New settings are frozen at the start of the next update. Successful existing scores are retained; only the summary composition is rebuilt from current eligible evidence.</p></header>
         <div class="settings-grid ai-settings-group">
           <label class="settings-field"><span>AI summaries</span><input class="settings-switch" data-config-path="llm.enabled" data-type="bool" type="checkbox" role="switch" {% if llm.enabled %}checked{% endif %}></label>
           <label class="settings-field"><span>Provider</span><select id="ai-provider" data-config-path="llm.provider" data-type="str"><option value="openai" {% if llm.provider == 'openai' %}selected{% endif %}>OpenAI</option><option value="ollama" {% if llm.provider == 'ollama' %}selected{% endif %}>Ollama</option></select></label>
@@ -132,18 +121,6 @@
           <label class="settings-field"><span>Maximum entries in one summary</span><input data-config-path="llm.maximum_summary_items" data-type="int" type="number" min="1" max="200" value="{{ llm.maximum_summary_items }}"></label>
         </div>
       </section>
-
-      {% if arxiv_available %}<section class="ai-policy-panel" data-ai-content="arxiv">
-        <header><h1>arXiv daily digest</h1><p>This optional specialist workflow is separate from ordinary feed summaries. A feed check collects the selected arXiv categories and performs local screening without AI. DistillFeed invokes its ranking model and publishes one combined digest only when a new arXiv announcement day is waiting.</p></header>
-        <div class="settings-grid ai-settings-group"><label class="settings-field"><span><strong>arXiv daily digest</strong><small>Enabling creates its dedicated sources without adding them to the ordinary AI queue.</small></span><input class="settings-switch" data-config-path="plugins.arxiv_digest_enabled" data-type="bool" type="checkbox" role="switch" {% if arxiv_enabled %}checked{% endif %}></label></div>
-        <div class="ai-stats ai-arxiv-stats"><div><strong>{{ arxiv_state.get('pending_announcement','—') }}</strong><span>waiting announcement</span></div><div><strong>{{ arxiv_state.get('last_digest_announcement','—') }}</strong><span>last published digest</span></div></div>
-        {% if arxiv_last_run and arxiv_last_run.status == 'failed' %}<aside class="ai-explanation ai-error"><strong>The last arXiv AI update failed</strong><span>{{ arxiv_last_run.error or 'The provider request failed.' }} The shortlist is preserved and Retry daily digest will continue from it.</span></aside>{% endif %}
-        <aside class="ai-explanation"><strong>One announcement, one digest</strong><span>cs.AI, cs.LG, cs.LO—or the categories you choose—are locally shortlisted together, ranked with the personal arXiv recipe, and published as one daily result. Ordinary source priorities and the ordinary waiting queue do not alter this digest.</span></aside>
-        <div class="settings-grid ai-settings-group">{% for field in arxiv_fields if field.common %}{{ arxiv_input(field) }}{% endfor %}</div>
-        <details class="advanced-settings"><summary>Ranking recipe and retrieval safeguards</summary><p class="help">These personal controls affect only the specialist daily digest.</p><div class="settings-grid ai-settings-group">{% for field in arxiv_fields if not field.common %}{{ arxiv_input(field) }}{% endfor %}</div></details>
-        {% if arxiv_enabled and (arxiv_readiness.blockers or arxiv_readiness.warnings) %}<aside class="ai-readiness ai-readiness-{{ arxiv_readiness.status }}" role="{{ 'alert' if arxiv_readiness.blockers else 'status' }}"><strong>{{ 'arXiv digest is blocked' if arxiv_readiness.blockers else 'arXiv digest needs attention' }}</strong>{% for issue in arxiv_readiness.blockers + arxiv_readiness.warnings %}<p>{{ issue.message }} {% if issue.action_url %}<a href="{{ issue.action_url }}">{{ issue.action_label or 'Review settings' }}</a>{% endif %}</p>{% endfor %}</aside>{% endif %}
-        <div class="ai-page-links"><button id="arxiv-run-now" class="ai-run-button" data-static-disabled="{{ 'false' if arxiv_enabled and arxiv_readiness.can_start else 'true' }}" type="button" {% if not arxiv_enabled or not arxiv_readiness.can_start or 'summary-update' in locks or 'llm-summary' in locks or 'feed-refresh' in locks %}disabled{% endif %}>{{ 'Update daily digest' if arxiv_enabled else 'Enable and save to update' }}</button><button id="arxiv-ntfy-test" data-static-disabled="{{ 'false' if arxiv_enabled else 'true' }}" type="button" {% if not arxiv_enabled %}disabled{% endif %}>Send test arXiv device alert</button></div>
-      </section>{% endif %}
 
       <section class="ai-policy-panel" data-ai-content="advanced">
         <header><h1>Advanced safeguards</h1><p>These limits divide one visible update plan into safe provider requests. They do not silently discard the rest of the queue.</p></header>
@@ -161,6 +138,6 @@
     </form>
   </main>
   <div id="toast" role="status" aria-live="polite"></div>
-  <script src="{{ url_for('static', filename='ai.js', v='0.23.1') }}" defer></script>
+  <script src="{{ url_for('static', filename='ai.js', v='0.23.2') }}" defer></script>
 </body>
 </html>

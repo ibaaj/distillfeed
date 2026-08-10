@@ -12,6 +12,7 @@ from io import BytesIO
 from functools import wraps
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import urlencode
 
 from flask import Flask, abort, jsonify, render_template, request, send_file, session
 from werkzeug.exceptions import BadRequest
@@ -211,6 +212,89 @@ def _json_list(value: Any) -> list[Any]:
     except (json.JSONDecodeError, TypeError, ValueError):
         return []
     return parsed if isinstance(parsed, list) else []
+
+
+def _clean_summary_text(value: Any) -> str:
+    """Turn model Markdown-like decoration into safe, readable plain text."""
+    text = str(value or "").replace("\u00a0", " ").strip()
+    text = re.sub(r"^\s{0,3}#{1,6}\s+", "", text)
+    text = re.sub(r"\[([^\]]+)\]\([^\s)]+(?:\s+\"[^\"]*\")?\)", r"\1", text)
+    text = text.replace("**", "").replace("__", "").replace("`", "")
+    # Models commonly wrap paper titles in single asterisks or underscores.
+    text = re.sub(r"(?<!\w)[*_](?=\S)|(?<=\S)[*_](?!\w)", "", text)
+    return re.sub(r"[ \t]+", " ", text).strip()
+
+
+def _summary_body_blocks(value: Any) -> list[dict[str, Any]]:
+    """Parse a deliberately small Markdown subset without accepting model HTML."""
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return []
+    # Some compact models return every arXiv bullet on one line. Split only at
+    # an unmistakable arXiv identifier, so prose hyphens remain untouched.
+    text = re.sub(
+        r"(?<!^)\s+[\-–•]\s+(?=\d{4}\.\d{4,5}(?:v\d+)?\b)", "\n- ", text,
+    )
+    blocks: list[dict[str, Any]] = []
+    paragraph_lines: list[str] = []
+    list_items: list[str] = []
+
+    def flush_paragraph() -> None:
+        if paragraph_lines:
+            cleaned = _clean_summary_text(" ".join(paragraph_lines))
+            if cleaned:
+                blocks.append({"kind": "paragraph", "text": cleaned})
+            paragraph_lines.clear()
+
+    def flush_list() -> None:
+        if list_items:
+            blocks.append({"kind": "list", "items": list_items.copy()})
+            list_items.clear()
+
+    for raw_line in text.split("\n"):
+        line = raw_line.strip()
+        if not line:
+            flush_paragraph()
+            flush_list()
+            continue
+        bullet = re.match(r"^(?:[-–•*]|\d+[.)])\s+(.+)$", line)
+        if bullet:
+            flush_paragraph()
+            cleaned = _clean_summary_text(bullet.group(1))
+            if cleaned:
+                list_items.append(cleaned)
+        else:
+            flush_list()
+            paragraph_lines.append(line)
+    flush_paragraph()
+    flush_list()
+    return blocks
+
+
+def _present_summary_sections(raw_sections: list[Any]) -> list[dict[str, Any]]:
+    """Normalize both legacy free-text sections and structured arXiv sections."""
+    sections: list[dict[str, Any]] = []
+    for raw_section in raw_sections:
+        if not isinstance(raw_section, dict):
+            continue
+        section = dict(raw_section)
+        section["heading"] = _clean_summary_text(section.get("heading", "Summary")) or "Summary"
+        body = section.get("body", section.get("summary", ""))
+        section["blocks"] = _summary_body_blocks(body)
+        paper_items: list[dict[str, str]] = []
+        for raw_item in section.get("items", []):
+            if not isinstance(raw_item, dict):
+                continue
+            title = _clean_summary_text(raw_item.get("title"))
+            rationale = _clean_summary_text(raw_item.get("rationale"))
+            identifier = _clean_summary_text(raw_item.get("arxiv_id"))
+            if title or rationale or identifier:
+                paper_items.append({
+                    "arxiv_id": identifier, "title": title, "rationale": rationale,
+                })
+        section["paper_items"] = paper_items
+        sections.append(section)
+    return sections
 
 
 def _group_tree(connection) -> list[dict[str, Any]]:
@@ -547,9 +631,10 @@ def _page_data(
                     summary_stale = bool(scope_pending_items or policy_changed)
                 summary_overviews.append(latest)
                 summary_sections.extend(
-                    dict(section) | {"group_title": scope_title}
-                    for section in _json_list(latest["sections_json"])
-                    if isinstance(section, dict)
+                    section | {"group_title": scope_title}
+                    for section in _present_summary_sections(
+                        _json_list(latest["sections_json"])
+                    )
                 )
             summary_items = connection.execute(
                 """SELECT si.*,i.title,i.url,i.feed_id,s.group_id,
@@ -627,7 +712,11 @@ def _flatten_config(data: dict[str, Any]) -> list[dict[str, Any]]:
         "llm.candidate_max_age_days": ("AI summaries", "Unscored candidate age limit (days)"),
         "llm.minimum_relevance": ("AI summaries", "Include articles scoring at least (0–100)"),
         "llm.maximum_summary_items": ("AI summaries", "Maximum entries in one summary"),
-        "llm.max_entries_total": ("Advanced", "Maximum items per AI request"),
+        "llm.max_entries_total": ("AI summaries", "Maximum items per evaluation request"),
+        "llm.max_entries_per_feed": ("AI summaries", "Maximum items from one feed per request"),
+        "llm.max_input_chars": ("AI summaries", "Maximum input characters per request"),
+        "llm.max_output_tokens": ("AI summaries", "Maximum output tokens per request"),
+        "llm.reasoning_effort": ("AI summaries", "Reasoning effort"),
         "llm.monthly_budget_usd": ("AI provider", "Local monthly AI budget (USD)"),
         "llm.rolling_digest_hours": ("AI summaries", "Ordinary summary evidence window (hours)"),
         "app.auto_summarize_after_refresh": ("Feed updates", "Run AI summaries after a scheduled feed check"),
@@ -733,10 +822,85 @@ def _all_summaries(connection, rolling_hours: int = 24) -> list[dict[str, Any]]:
         result.append({
             "summary": dict(row), "items": items,
             "clusters": _cluster_summary_items(items),
-            "sections": _json_list(row["sections_json"]),
+            "sections": _present_summary_sections(_json_list(row["sections_json"])),
             "merged_summary_count": 1,
         })
     return result
+
+
+def _ordinary_ai_settings_data(
+    connection, config: Config, *, group_id: int | None = None,
+    feed_id: int | None = None,
+) -> dict[str, Any]:
+    """Build the complete ordinary-AI settings view for the reader dialog."""
+    queue = queue_dashboard(
+        connection, limit=30, view="ready",
+        maximum_age_days=int(config.get("llm", "candidate_max_age_days", 0)),
+        group_id=group_id, feed_id=feed_id,
+    )
+    plan = build_plan(connection, config, group_id=group_id, feed_id=feed_id)
+    readiness = ordinary_readiness(
+        connection, config, group_id=group_id, feed_id=feed_id, plan=plan,
+    )
+    enabled_groups = set(llm_enabled_group_ids(connection))
+    group_modes = effective_group_modes(connection)
+    group_rows = connection.execute("SELECT id,parent_id FROM groups").fetchall()
+    parents = {
+        int(row["id"]): int(row["parent_id"]) if row["parent_id"] is not None else None
+        for row in group_rows
+    }
+    ordinary_group_ids: set[int] = set()
+    for row in connection.execute(
+        "SELECT DISTINCT group_id FROM feeds WHERE xml_url NOT LIKE 'plugin://%'"
+    ).fetchall():
+        identifier = int(row["group_id"])
+        while True:
+            ordinary_group_ids.add(identifier)
+            parent = parents.get(identifier)
+            if parent is None:
+                break
+            identifier = parent
+    groups = [
+        dict(row) | {
+            "effective_llm": int(row["id"]) in enabled_groups,
+            "effective_mode": group_modes.get(int(row["id"]), "off"),
+        }
+        for row in connection.execute(
+            """SELECT g.id,g.title,g.parent_id,g.position,g.llm_enabled,g.ai_mode,
+                      g.ai_priority,g.summary_interval_hours,g.summary_item_budget,
+                      COUNT(q.item_id) AS pending_count
+                 FROM groups g LEFT JOIN feeds f ON f.group_id=g.id
+                 LEFT JOIN items i ON i.feed_id=f.id
+                 LEFT JOIN ai_review_queue q ON q.item_id=i.id
+                      AND q.state IN ('waiting','retry','processing')
+                WHERE NOT (g.parent_id IS NULL AND g.title='Ungrouped')
+                GROUP BY g.id ORDER BY g.position,g.title COLLATE NOCASE"""
+        ).fetchall()
+        if int(row["id"]) in ordinary_group_ids
+    ]
+    feeds = [dict(row) for row in connection.execute(
+        """SELECT f.id,f.group_id,f.title,f.ai_mode,f.llm_enabled,
+                  g.title AS group_title,COUNT(q.item_id) AS pending_count
+             FROM feeds f JOIN groups g ON g.id=f.group_id
+             LEFT JOIN items i ON i.feed_id=f.id
+             LEFT JOIN ai_review_queue q ON q.item_id=i.id
+                  AND q.state IN ('waiting','retry','processing')
+            WHERE f.enabled=1 AND f.xml_url NOT LIKE 'plugin://%'
+            GROUP BY f.id ORDER BY f.group_id,f.position,f.title COLLATE NOCASE"""
+    ).fetchall()]
+    for feed in feeds:
+        parent_mode = group_modes.get(int(feed["group_id"]), "off")
+        own_mode = str(feed["ai_mode"])
+        feed["effective_mode"] = (
+            "off" if not feed["llm_enabled"] or own_mode == "off" or parent_mode == "off"
+            else "manual" if own_mode == "manual" or parent_mode == "manual"
+            else parent_mode if own_mode == "inherit" else "automatic"
+        )
+    return {
+        "queue": queue, "plan": plan, "readiness": readiness,
+        "groups": groups, "feeds": feeds,
+        "selected_group_id": group_id, "selected_feed_id": feed_id,
+    }
 
 
 def _notification_data(connection, config: Config) -> dict[str, Any]:
@@ -1026,9 +1190,11 @@ def create_app(config_path: str | None = None) -> Flask:
 
     @app.get("/")
     def index():
+        requested_group_id = request.args.get("group", type=int)
+        requested_feed_id = request.args.get("feed", type=int)
         with connect(config.database_path) as connection:
             data = _page_data(
-                connection, config, request.args.get("group", type=int), request.args.get("feed", type=int),
+                connection, config, requested_group_id, requested_feed_id,
                 int(config.get("llm", "rolling_digest_hours")),
             )
             # SQLite rows are immutable; installed plugins receive ordinary
@@ -1041,7 +1207,35 @@ def create_app(config_path: str | None = None) -> Flask:
                     "minimum_relevance", 85
                 )),
             )
+            settings_has_scope = requested_group_id is not None or requested_feed_id is not None
+            ordinary_group_id = (
+                data["selected_group_id"]
+                if settings_has_scope and not data["is_arxiv_scope"] else None
+            )
+            ordinary_feed_id = (
+                data["selected_feed_id"]
+                if settings_has_scope and not data["is_arxiv_scope"] else None
+            )
+            data["ai_settings"] = _ordinary_ai_settings_data(
+                connection, config, group_id=ordinary_group_id, feed_id=ordinary_feed_id,
+            )
+            data["arxiv_readiness"] = arxiv_readiness(
+                connection, config, require_enabled=False,
+            )
+            try:
+                data["arxiv_state"] = {
+                    str(row["key"]): str(row["value"])
+                    for row in connection.execute(
+                        "SELECT key,value FROM distillfeed_arxiv_state"
+                    ).fetchall()
+                }
+            except Exception:
+                data["arxiv_state"] = {}
         core_fields = _flatten_config(config.data)
+        arxiv_fields = [
+            field for field in plugin_settings_fields(config)
+            if str(field.get("path", "")).startswith("plugin.arxiv_digest.")
+        ]
         return render_template(
             "index.html", **data, auto_refresh=config.get("app", "auto_refresh_on_load"),
             refresh_interval_minutes=config.get("app", "refresh_interval_minutes"),
@@ -1050,6 +1244,12 @@ def create_app(config_path: str | None = None) -> Flask:
             config_fields=core_fields, ui=config.section("ui"),
             app_mode=config.get("app", "mode"),
             arxiv_available="arxiv_digest" in available_plugin_names(),
+            arxiv_enabled=bool(config.get("plugins", "arxiv_digest_enabled", False)),
+            arxiv_fields=arxiv_fields,
+            arxiv_actions=[
+                action for action in plugin_settings_actions(config)
+                if action.get("category") == "arXiv digest"
+            ],
             generated_feeds_enabled=config.generated_feed_directory is not None,
         )
 
@@ -1305,7 +1505,12 @@ def create_app(config_path: str | None = None) -> Flask:
                    JOIN llm_runs lr ON lr.id=s.llm_run_id WHERE lr.status='success'
                    ORDER BY lr.id DESC, g.title COLLATE NOCASE LIMIT 500"""
             ).fetchall()
-        summaries = [dict(row) | {"sections": _json_list(row["sections_json"])} for row in rows]
+        summaries = [
+            dict(row) | {
+                "sections": _present_summary_sections(_json_list(row["sections_json"]))
+            }
+            for row in rows
+        ]
         return render_template("history.html", summaries=summaries, ui=config.section("ui"))
 
     @app.get("/costs")
@@ -1419,18 +1624,37 @@ def create_app(config_path: str | None = None) -> Flask:
     def arxiv_archive_page():
         """Browse every retained arXiv announcement, independent of the digest."""
         page = max(1, request.args.get("page", default=1, type=int) or 1)
-        page_size = 100
+        page_size = 60
         selected_status = str(request.args.get("status", "all")).strip().casefold()
         allowed_statuses = {"all", "pending", "screened", "kept", "dropped"}
         if selected_status not in allowed_statuses:
             selected_status = "all"
         query = str(request.args.get("q", "")).strip()[:200]
+        selected_category = str(request.args.get("category", "")).strip()[:40]
+        if selected_category and not re.fullmatch(r"[A-Za-z-]+\.[A-Za-z-]+", selected_category):
+            selected_category = ""
+        selected_sort = str(request.args.get("sort", "date-desc")).strip().casefold()
+        sort_sql = {
+            "date-desc": "COALESCE(i.published_at,i.discovered_at) DESC,i.id DESC",
+            "date-asc": "COALESCE(i.published_at,i.discovered_at) ASC,i.id ASC",
+            "ai-desc": "ap.llm_score IS NULL,ap.llm_score DESC,i.id DESC",
+            "ai-asc": "ap.llm_score IS NULL,ap.llm_score ASC,i.id DESC",
+            "local-desc": "ap.local_score IS NULL,ap.local_score DESC,i.id DESC",
+            "local-asc": "ap.local_score IS NULL,ap.local_score ASC,i.id DESC",
+            "final-desc": "ap.final_score IS NULL,ap.final_score DESC,i.id DESC",
+            "final-asc": "ap.final_score IS NULL,ap.final_score ASC,i.id DESC",
+            "status": "CASE ap.evaluation_status WHEN 'pending' THEN 0 WHEN 'screened_out' THEN 1 ELSE 2 END,ap.decision,i.id DESC",
+            "title": "i.title COLLATE NOCASE,i.id DESC",
+        }
+        if selected_sort not in sort_sql:
+            selected_sort = "date-desc"
         with connect(config.database_path) as connection:
             available = bool(connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='distillfeed_arxiv_papers'"
             ).fetchone())
             counts = {key: 0 for key in allowed_statuses}
             items: list[Any] = []
+            categories: list[str] = []
             total = 0
             if available:
                 row = connection.execute(
@@ -1448,6 +1672,15 @@ def create_app(config_path: str | None = None) -> Flask:
                     "kept": int(row["kept_count"] or 0),
                     "dropped": int(row["dropped_count"] or 0),
                 }
+                discovered_categories: set[str] = set()
+                for category_row in connection.execute(
+                    "SELECT DISTINCT categories_json FROM distillfeed_arxiv_papers"
+                ).fetchall():
+                    discovered_categories.update(
+                        str(value) for value in _json_list(category_row["categories_json"])
+                        if re.fullmatch(r"[A-Za-z-]+\.[A-Za-z-]+", str(value))
+                    )
+                categories = sorted(discovered_categories, key=str.casefold)
                 conditions: list[str] = []
                 parameters: list[Any] = []
                 status_sql = {
@@ -1458,10 +1691,17 @@ def create_app(config_path: str | None = None) -> Flask:
                 }
                 if selected_status != "all":
                     conditions.append(status_sql[selected_status])
+                if selected_category:
+                    conditions.append("ap.categories_json LIKE ?")
+                    parameters.append(f'%"{selected_category}"%')
                 if query:
-                    conditions.append("(i.title LIKE ? OR i.author LIKE ? OR ap.arxiv_id LIKE ?)")
+                    conditions.append(
+                        "(i.title LIKE ? OR i.author LIKE ? OR ap.arxiv_id LIKE ? "
+                        "OR i.description_text LIKE ? OR ap.why LIKE ? "
+                        "OR ap.local_reasons_json LIKE ? OR ap.categories_json LIKE ?)"
+                    )
                     pattern = f"%{query}%"
-                    parameters.extend((pattern, pattern, pattern))
+                    parameters.extend((pattern,) * 7)
                 where = "WHERE " + " AND ".join(conditions) if conditions else ""
                 total = int(connection.execute(
                     f"""SELECT COUNT(*) FROM distillfeed_arxiv_papers ap
@@ -1470,24 +1710,55 @@ def create_app(config_path: str | None = None) -> Flask:
                 ).fetchone()[0])
                 page_count = max(1, (total + page_size - 1) // page_size)
                 page = min(page, page_count)
-                items = connection.execute(
+                item_rows = connection.execute(
                     f"""SELECT i.*,f.title AS feed_title,ap.arxiv_id,ap.pdf_url,
                                 ap.local_score,ap.llm_score,ap.final_score,ap.decision,
-                                ap.why,ap.evaluation_status,ap.local_reasons_json
+                                ap.why,ap.evaluation_status,ap.local_reasons_json,
+                                ap.categories_json,ap.primary_category,ap.announce_type
                            FROM distillfeed_arxiv_papers ap
                            JOIN items i ON i.id=ap.item_id
                            JOIN feeds f ON f.id=i.feed_id
                            {where}
-                          ORDER BY COALESCE(i.published_at,i.discovered_at) DESC,i.id DESC
+                          ORDER BY {sort_sql[selected_sort]}
                           LIMIT ? OFFSET ?""",
                     [*parameters, page_size, (page - 1) * page_size],
                 ).fetchall()
+                items = [
+                    dict(item) | {
+                        "categories": [str(value) for value in _json_list(item["categories_json"])],
+                        "local_reasons": [
+                            _clean_summary_text(value)
+                            for value in _json_list(item["local_reasons_json"])
+                            if _clean_summary_text(value)
+                        ],
+                    }
+                    for item in item_rows
+                ]
             else:
                 page_count = 1
+        base_query = {
+            "status": selected_status, "q": query, "category": selected_category,
+            "sort": selected_sort,
+        }
+        state_urls = {
+            status: "/arxiv?" + urlencode(base_query | {"status": status})
+            for status in sorted(allowed_statuses)
+        }
+        clear_url = "/arxiv?" + urlencode({"status": selected_status, "sort": selected_sort})
+        previous_url = (
+            "/arxiv?" + urlencode(base_query | {"page": page - 1}) if page > 1 else None
+        )
+        next_url = (
+            "/arxiv?" + urlencode(base_query | {"page": page + 1})
+            if page < page_count else None
+        )
         return render_template(
             "arxiv.html", items=items, counts=counts, total=total,
             selected_status=selected_status, query=query, page=page,
             page_count=page_count, available=available, ui=config.section("ui"),
+            categories=categories, selected_category=selected_category,
+            selected_sort=selected_sort, state_urls=state_urls, clear_url=clear_url,
+            previous_url=previous_url, next_url=next_url,
         )
 
     @app.get("/api/backup")
