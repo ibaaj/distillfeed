@@ -146,7 +146,9 @@ body.reader-page > .layout { flex: 1 1 auto; height: auto; min-height: 0; }
 .feed-properties { flex: 0 0 auto; padding-inline: 4px; }
 .counts, .feed-count { font-variant-numeric: tabular-nums; font-size: .82em; }
 .item-controls { flex-wrap: wrap; justify-content: flex-end; font-weight: normal; }
-.item-controls select { max-width: 125px; }
+.item-control-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px 9px; }
+.item-control-actions label { min-width: 0; }
+.item-controls select { max-width: 145px; }
 .item-controls input, .pane-tools input { width: 80px; }
 .item-controls [hidden] { display: none; }
 .item-view-description { max-width: 190px; font-size: 11px; line-height: 1.25; text-align: right; }
@@ -245,7 +247,7 @@ body.reader-page > .layout { flex: 1 1 auto; height: auto; min-height: 0; }
 .summary-empty-state > strong { color: var(--text); }.summary-empty-state p { margin: 7px 0; }.summary-empty-state a { font-weight: 650; }
 .overview { font-size: 16px; margin-top: 0; padding-bottom: 15px; border-bottom: 1px solid var(--border); }
 .overview h2 { margin: 0 0 5px; font-size: 14px; }.overview p { margin: 0; }
-.summary-changes { padding: 9px 11px; border-left: 3px solid var(--accent); background: var(--surface); color: var(--muted); }.digest-sections { display: grid; gap: 10px; margin: 12px 0 18px; }.digest-sections section { padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }.digest-sections h3 { margin: 0 0 5px; font-size: 14px; }.digest-sections p { margin: 0; }
+.summary-changes { padding: 9px 11px; border-left: 3px solid var(--accent); background: var(--surface); color: var(--muted); }.digest-sections { display: grid; gap: 10px; margin: 18px 0; }.digest-sections-title { margin: 0; font-size: 17px; }.digest-sections > .cluster-score { margin: -7px 0 0; }.digest-sections section { padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }.digest-sections h3 { margin: 0 0 5px; font-size: 14px; }.digest-sections section p { margin: 0; }
 .ranked-summary { padding-left: 24px; }.ranked-summary li { padding: 0 0 16px 5px; }
 .ranked-summary h2 { font-size: 16px; margin: 0 0 2px; line-height: 1.3; }.ranked-summary h2 a { text-decoration: none; }
 .ranked-summary p { margin: 6px 0 0; }.ranked-summary .justification { color: var(--muted); font-size: 13px; }
@@ -484,7 +486,16 @@ dialog .checkbox-label { display: flex; align-items: center; gap: 8px; } dialog 
 @container items-pane (max-width: 680px) {
   .items-pane > .pane-heading { flex-wrap: wrap; padding-block: 8px; }
   .items-pane > .pane-heading > span:first-child { width: 100%; }
-  .items-pane > .pane-heading .item-controls { width: 100%; justify-content: space-between; }
+  .items-pane > .pane-heading .item-controls { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; }
+  .item-control-actions { display: grid; grid-template-columns: auto minmax(102px, .8fr) minmax(145px, 1.2fr) auto; grid-template-areas: "refresh sort limit text"; align-items: end; gap: 7px 8px; }
+  .item-refresh-control { grid-area: refresh; min-height: 36px; align-self: end; white-space: nowrap; }
+  .item-control-field { display: grid !important; align-items: end !important; gap: 3px !important; }
+  .item-control-field > span { color: var(--muted); font-size: 10px; line-height: 1; white-space: nowrap; }
+  .item-control-field select { width: 100%; max-width: none; min-width: 0; }
+  .item-sort-control { grid-area: sort; }
+  .item-limit-control { grid-area: limit; }
+  .item-text-control { grid-area: text; align-self: center; white-space: nowrap; }
+  .item-view-description { max-width: none; padding: 5px 7px; border-radius: 6px; background: var(--surface-2); text-align: left; }
   .item-row:not(.plugin-item) { grid-template-columns: 24px 28px 24px minmax(0, 1fr) 42px 28px; grid-template-rows: auto auto; min-height: 68px; }
   .item-row:not(.plugin-item) > .item-select { grid-column: 1; grid-row: 1 / 3; }
   .item-row:not(.plugin-item) > .star-button { grid-column: 2; grid-row: 1 / 3; }
@@ -498,6 +509,8 @@ dialog .checkbox-label { display: flex; align-items: center; gap: 8px; } dialog 
   .ranking-status::after { content: "…"; font-size: 13px; }
 }
 @container items-pane (max-width: 520px) {
+  .item-control-actions { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "refresh refresh text" "sort limit limit"; align-items: end; }
+  .item-refresh-control { justify-self: start; }
   .item-filterbar > .item-filter-actions { grid-template-columns: minmax(0,1fr) minmax(0,1fr); }
   .item-filter-actions > .select-visible { justify-self: start; }
   .item-filter-actions > #selected-actions { justify-self: stretch; }

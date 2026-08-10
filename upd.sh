@@ -8,7 +8,7 @@ fi
 set -Eeuo pipefail
 umask 077
 
-EXPECTED_VERSION="0.23.4"
+EXPECTED_VERSION="0.23.5"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 DEFAULT_ARCHIVE="$SCRIPT_DIR/distillfeed-$EXPECTED_VERSION.tar.gz"
 
@@ -359,18 +359,20 @@ PY
 
 restore_source() {
     [[ -n "$BACKUP_DIR" && -d "$BACKUP_DIR/source" ]] || return 0
-    local entry source
+    local entry source rollback_entries
     for entry in "${ALL_ENTRIES[@]}"; do
         safe_entry "$entry" || continue
         if [[ -e "$INSTALL_DIR/$entry" || -L "$INSTALL_DIR/$entry" ]]; then
             rm -rf "$INSTALL_DIR/$entry" || return 1
         fi
     done
+    rollback_entries="$STAGE/rollback-top-level.entries"
+    top_level_entries "$BACKUP_DIR/source" > "$rollback_entries" || return 1
     while IFS= read -r -d '' source; do
         entry="$(basename "$source")"
         safe_entry "$entry" || { printf 'Unsafe backup entry during rollback: %s\n' "$entry" >&2; return 1; }
         cp -R -p -P "$source" "$INSTALL_DIR/$entry" || return 1
-    done < <(top_level_entries "$BACKUP_DIR/source")
+    done < "$rollback_entries"
 }
 
 rollback() {
@@ -599,6 +601,9 @@ if expected_digest and not re.fullmatch(r"[0-9a-f]{64}", expected_digest):
 required_files = {
     "distillfeed/install.sh",
     "distillfeed/launch.sh",
+    "distillfeed/upd.sh",
+    "distillfeed/update-github.sh",
+    "distillfeed/test-distillfeed.sh",
     "distillfeed/pyproject.toml",
     "distillfeed/uv.lock",
     "distillfeed/config.example.toml",
@@ -631,6 +636,14 @@ required_files = {
     "distillfeed/tests/test_setup_commit.py",
     "distillfeed/tests/test_setup_profiles.py",
     "distillfeed/tests/test_setup_state_model.py",
+}
+executable_files = {
+    "distillfeed/install.sh",
+    "distillfeed/launch.sh",
+    "distillfeed/upd.sh",
+    "distillfeed/update-github.sh",
+    "distillfeed/test-distillfeed.sh",
+    "distillfeed/deployment/start.sh",
 }
 forbidden_parts = {
     ".git", ".venv", ".pytest_cache", "__pycache__", "build", "dist",
@@ -694,11 +707,7 @@ with archive.open("rb") as raw:
                     )
                 directory_names.add(name)
             elif member.isfile():
-                expected_mode = (
-                    0o755
-                    if name in {"distillfeed/install.sh", "distillfeed/launch.sh"}
-                    else 0o644
-                )
+                expected_mode = 0o755 if name in executable_files else 0o644
                 if mode != expected_mode:
                     raise SystemExit(
                         f"Archive file must have mode {expected_mode:04o}, "
@@ -769,11 +778,7 @@ with archive.open("rb") as raw:
             # Normalize source permissions instead of preserving arbitrary
             # executable bits: shell entry points are executable, other files
             # are read-only to group/other and writable only by the owner.
-            destination.chmod(
-                0o755
-                if canonical_name in {"distillfeed/install.sh", "distillfeed/launch.sh"}
-                else 0o644
-            )
+            destination.chmod(0o755 if canonical_name in executable_files else 0o644)
         for directory in sorted(directories, key=lambda item: len(item.parts), reverse=True):
             directory.chmod(0o755)
 
@@ -816,18 +821,19 @@ print("Version loci:", ", ".join(f"{name}={value}" for name, value in checks.ite
 PY
 
 bash -n "$SCRIPT_DIR/upd.sh"
-while IFS= read -r -d '' shell_file; do
+find "$RELEASE" -type f -name '*.sh' -print0 | while IFS= read -r -d '' shell_file; do
     first_line="$(head -n 1 "$shell_file" 2>/dev/null || true)"
     if [[ "$first_line" == *bash* ]]; then
         bash -n "$shell_file"
     else
         sh -n "$shell_file"
     fi
-done < <(find "$RELEASE" -type f -name '*.sh' -print0)
+done
 if command -v node >/dev/null 2>&1; then
-    while IFS= read -r -d '' javascript_file; do
+    find "$RELEASE/rss_reader/static" -type f -name '*.js' -print0 \
+        | while IFS= read -r -d '' javascript_file; do
         node --check "$javascript_file"
-    done < <(find "$RELEASE/rss_reader/static" -type f -name '*.js' -print0)
+    done
 fi
 
 note "Resolving managed source entries and creating an old-release snapshot..."
@@ -861,6 +867,8 @@ if [[ -f "$INSTALL_DIR/.distillfeed-managed-entries" ]]; then
         fi
     done < "$INSTALL_DIR/.distillfeed-managed-entries"
 fi
+RELEASE_TOP_LEVEL="$STAGE/release-top-level.entries"
+top_level_entries "$RELEASE" > "$RELEASE_TOP_LEVEL"
 while IFS= read -r -d '' path; do
     entry="$(basename "$path")"
     safe_entry "$entry" || fail "unsafe top-level release entry: $entry"
@@ -875,11 +883,13 @@ while IFS= read -r -d '' path; do
     fi
     NEW_ENTRIES+=("$entry")
     add_managed_entry "$entry"
-done < <(top_level_entries "$RELEASE")
+done < "$RELEASE_TOP_LEVEL"
 SORTED_ENTRIES=()
+SORTED_ENTRY_LIST="$STAGE/managed-entries.sorted"
+printf '%s\n' "${ALL_ENTRIES[@]}" | LC_ALL=C sort > "$SORTED_ENTRY_LIST"
 while IFS= read -r entry; do
     [[ -n "$entry" ]] && SORTED_ENTRIES+=("$entry")
-done < <(printf '%s\n' "${ALL_ENTRIES[@]}" | LC_ALL=C sort)
+done < "$SORTED_ENTRY_LIST"
 ALL_ENTRIES=("${SORTED_ENTRIES[@]}")
 
 mkdir -p "$OLD_SNAPSHOT"

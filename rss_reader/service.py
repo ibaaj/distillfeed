@@ -340,14 +340,27 @@ def run_summary(
                     "message": f"Ordinary feed summaries failed: {failure.message}",
                 }
         else:
+            unchanged_plugin = next(
+                (
+                    item for item in plugin_result["plugins"]
+                    if str(item.get("status")) == "unchanged"
+                ),
+                {},
+            )
             result = {
                 "status": "success" if plugin_result["succeeded"] else (
-                    "failed" if plugin_result["failed"] else "empty"
+                    "failed" if plugin_result["failed"] else (
+                        "unchanged" if unchanged_plugin else "empty"
+                    )
                 ),
                 "message": (
                     "Daily plugin digest updated" if plugin_result["succeeded"]
                     else "Plugin digest failed; its announcement remains waiting"
-                    if plugin_result["failed"] else "No plugin digest is waiting"
+                    if plugin_result["failed"] else str(
+                        unchanged_plugin.get("message")
+                        or "The daily plugin digest is already up to date"
+                    )
+                    if unchanged_plugin else "No plugin digest is waiting"
                 ),
             }
             if plugin_result.get("blocked") and not plugin_result["succeeded"]:

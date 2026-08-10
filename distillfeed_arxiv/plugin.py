@@ -475,6 +475,12 @@ class ArxivDigestPlugin:
             stats["status"] = "partial" if _retrieval_degraded(stats) else (
                 "unchanged" if stats.get("new_items", 0) == 0 else "success"
             )
+            if stats["status"] == "unchanged":
+                stats["message"] = (
+                    "The daily arXiv digest is already up to date"
+                    if _state(context.connection, "last_digest_fingerprint")
+                    else "No new arXiv papers are waiting for a daily digest"
+                )
             return stats
         scored = [(item_id, paper, compute_local_score(paper, cfg)) for item_id, paper in pending]
         broad = int(cfg["filters"].get("broad_candidate_threshold", 0))

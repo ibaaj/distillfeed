@@ -20,6 +20,7 @@ from rss_reader.config import DEFAULTS, Config, load_config, save_config
 from rss_reader.db import connect, initialize, utcnow
 from rss_reader.plugins import RefreshContext, available_plugin_names, refresh_plugins
 from rss_reader.opml import build_tree_from_database, parse_opml_bytes, serialize_opml
+from rss_reader.service import run_update_summaries
 from rss_reader.web import _group_tree, create_app
 import distillfeed_arxiv.llm as llm_module
 import distillfeed_arxiv.fetch as fetch_module
@@ -416,6 +417,7 @@ def test_large_announcement_shortlists_once_and_repeat_is_model_free(configured,
     assert second["new_items"] == 0
     repeated = plugin.summarize(context(configured, connection))
     assert repeated["status"] == "unchanged"
+    assert repeated["message"] == "The daily arXiv digest is already up to date"
     assert calls == {"rank": 1, "digest": 1}
     connection.close()
 
@@ -525,6 +527,69 @@ def test_arxiv_archive_and_rankings_follow_configured_category_scope(configured)
     stylesheet = client.get("/static/app.css").data
     assert b".arxiv-browser-controls .arxiv-apply-button" in stylesheet
     assert b"min-height: 30px" in stylesheet
+
+
+def test_daily_digest_button_checks_then_summarizes_and_repeats_as_up_to_date(
+    configured, monkeypatch,
+):
+    configured.data["plugins"]["arxiv_digest_enabled"] = True
+    save_config(configured)
+    with connect(configured.database_path) as connection:
+        plugin = ArxivDigestPlugin()
+        plugin.initialize(connection, configured)
+        group_id = int(connection.execute(
+            "SELECT value FROM distillfeed_arxiv_state WHERE key='group_id'"
+        ).fetchone()[0])
+
+    candidate = paper("2608.42424")
+    monkeypatch.setattr(plugin_module, "fetch_rss", lambda category, cfg: [candidate])
+    monkeypatch.setattr(plugin_module, "fetch_api_window", lambda *args, **kwargs: [])
+    monkeypatch.setattr(plugin_module.time, "sleep", lambda _: None)
+    monkeypatch.setattr(
+        "rss_reader.service.refresh_all",
+        lambda *args, **kwargs: {
+            "attempted": 0, "succeeded": 0, "failed": 0, "new_items": 0,
+        },
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    model_calls = {"ranking": 0, "digest": 0}
+
+    def rank(candidates, cfg, **kwargs):
+        model_calls["ranking"] += 1
+        return ({
+            entry.arxiv_id: {
+                "score": 93, "decision": "keep", "why": "Direct match", "tags": ["AI"],
+            }
+            for entry, _local in candidates
+        }, LLMUsage())
+
+    def digest(papers, cfg, language):
+        model_calls["digest"] += 1
+        return ({"overview": "Current daily digest", "sections": []}, LLMUsage())
+
+    monkeypatch.setattr(plugin_module, "rerank", rank)
+    monkeypatch.setattr(plugin_module, "daily_digest", digest)
+    monkeypatch.setattr(
+        plugin_module, "deliver_arxiv_pushes",
+        lambda *args, **kwargs: {"status": "disabled"},
+    )
+
+    first = run_update_summaries(
+        configured, group_id=group_id, include_plugins=True, include_generic=False,
+    )
+    assert first["status"] == "success"
+    assert first["refresh"]["plugins"][0]["status"] == "waiting-for-digest"
+    assert first["summary"]["plugins"][0]["status"] == "success"
+    assert model_calls == {"ranking": 1, "digest": 1}
+
+    repeated = run_update_summaries(
+        configured, group_id=group_id, include_plugins=True, include_generic=False,
+    )
+    assert repeated["status"] == "unchanged"
+    assert repeated["message"] == "The daily arXiv digest is already up to date"
+    assert repeated["refresh"]["plugins"][0]["status"] == "unchanged"
+    assert repeated["summary"]["plugins"][0]["status"] == "unchanged"
+    assert model_calls == {"ranking": 1, "digest": 1}
 
 
 def test_same_day_late_evidence_creates_append_only_digest_revision(configured, monkeypatch):
@@ -736,10 +801,12 @@ def test_invalid_arxiv_key_is_actionable_persistent_and_never_reported_as_succes
     assert "Set a valid OPENAI_API_KEY" in status["arxiv_run"]["error"]
     assert "private-key-material" not in status["arxiv_run"]["error"]
     assert status["arxiv"]["pending_items"] == 1
+    # ArXiv has its own module and reader state; ordinary AI settings must not
+    # reintroduce an unrelated specialist submenu.
     ai_page = client.get("/ai").data
-    assert b"The last arXiv AI update failed" in ai_page
+    assert b"arXiv AI update failed" not in ai_page
     assert b"private-key-material" not in ai_page
-    reader = client.get(f"/?group_id={group_id}").data
+    reader = client.get(f"/?group={group_id}").data
     assert b"arXiv AI update failed" in reader
     assert b"Retry daily digest" in reader
     assert b"private-key-material" not in reader

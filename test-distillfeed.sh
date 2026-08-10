@@ -11,7 +11,7 @@ set -Eeuo pipefail
 # AI calls are separate, explicit opt-ins; the default run only uses mocked
 # network responses from the test suite and loopback HTTP health requests.
 
-EXPECTED_VERSION="0.23.4"
+EXPECTED_VERSION="0.23.5"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 ARCHIVE="${ARCHIVE:-$SCRIPT_DIR/distillfeed-$EXPECTED_VERSION.tar.gz}"
 TEST_TMPDIR="${TEST_TMPDIR:-${TMPDIR:-/tmp}}"
@@ -131,6 +131,7 @@ import shutil
 import sys
 import tarfile
 import tomllib
+import zipfile
 from pathlib import Path, PurePosixPath
 
 archive = Path(sys.argv[1])
@@ -148,9 +149,43 @@ if archive.stat().st_size > maximum_archive_bytes:
 if expected_digest and not re.fullmatch(r"[0-9a-f]{64}", expected_digest):
     raise SystemExit("ARCHIVE_SHA256 must contain exactly 64 hexadecimal characters")
 
+with archive.open("rb") as raw:
+    digest = hashlib.sha256()
+    while chunk := raw.read(1024 * 1024):
+        digest.update(chunk)
+source_digest = digest.hexdigest()
+if expected_digest and source_digest != expected_digest:
+    raise SystemExit(
+        f"Archive SHA-256 mismatch: expected {expected_digest}, found {source_digest}"
+    )
+
+if zipfile.is_zipfile(archive):
+    member_name = f"distillfeed-{expected_version}.tar.gz"
+    with zipfile.ZipFile(archive) as bundle:
+        matching = [info for info in bundle.infolist() if info.filename == member_name]
+        if len(matching) != 1:
+            raise SystemExit(
+                f"Update bundle must contain exactly one {member_name!r} member"
+            )
+        member = matching[0]
+        if member.is_dir() or member.flag_bits & 0x1:
+            raise SystemExit("The release tarball member must be a regular, unencrypted file")
+        if member.file_size <= 0 or member.file_size > maximum_archive_bytes:
+            raise SystemExit("Nested release tarball has an invalid size")
+        nested_archive = extract_root.parent / member_name
+        with bundle.open(member) as source, nested_archive.open("xb") as destination:
+            shutil.copyfileobj(source, destination, length=1024 * 1024)
+        if nested_archive.stat().st_size != member.file_size:
+            raise SystemExit("Nested release tarball was not extracted completely")
+    archive = nested_archive
+    expected_digest = ""
+
 required_files = {
     "distillfeed/install.sh",
     "distillfeed/launch.sh",
+    "distillfeed/upd.sh",
+    "distillfeed/update-github.sh",
+    "distillfeed/test-distillfeed.sh",
     "distillfeed/pyproject.toml",
     "distillfeed/uv.lock",
     "distillfeed/config.example.toml",
@@ -193,6 +228,10 @@ required_files = {
 executable_files = {
     "distillfeed/install.sh",
     "distillfeed/launch.sh",
+    "distillfeed/upd.sh",
+    "distillfeed/update-github.sh",
+    "distillfeed/test-distillfeed.sh",
+    "distillfeed/deployment/start.sh",
 }
 forbidden_parts = {
     ".git", ".venv", ".pytest_cache", "__pycache__", "build", "dist",
@@ -334,7 +373,7 @@ with archive.open("rb") as raw:
         for directory, mode in sorted(directories, key=lambda item: len(item[0].parts), reverse=True):
             directory.chmod(mode)
 
-print(f"Archive SHA-256: {actual_digest}")
+print(f"Archive SHA-256: {source_digest}")
 print(f"Validated members: {len(members)}; expanded bytes: {total_bytes}")
 PY
 
@@ -350,6 +389,10 @@ root = Path(sys.argv[1])
 expected = {
     "install.sh": 0o755,
     "launch.sh": 0o755,
+    "upd.sh": 0o755,
+    "update-github.sh": 0o755,
+    "test-distillfeed.sh": 0o755,
+    "deployment/start.sh": 0o755,
     "rss_reader/resources/starter-subscriptions.opml": 0o644,
     "rss_reader/static/setup.css": 0o644,
     "rss_reader/static/setup.js": 0o644,
@@ -363,10 +406,13 @@ for relative, wanted in expected.items():
         raise SystemExit(
             f"Extracted {relative} must have mode {wanted:04o}, found {actual:04o}"
         )
-for relative in ("install.sh", "launch.sh"):
+for relative in (
+    "install.sh", "launch.sh", "upd.sh", "update-github.sh",
+    "test-distillfeed.sh", "deployment/start.sh",
+):
     if not os.access(root / relative, os.X_OK):
         raise SystemExit(f"Extracted {relative} is not executable")
-print("Release script and setup-asset modes: correct")
+print("Release, updater, GitHub publisher, and setup-asset modes: correct")
 PY
 
 note "Deriving exact runtime/test constraints from the frozen lock file..."
@@ -443,19 +489,20 @@ PY
 
 note "Checking every shipped shell file..."
 bash -n "$SCRIPT_DIR/test-distillfeed.sh"
-while IFS= read -r -d '' shell_file; do
+find "$PROJECT" -type f -name '*.sh' -print0 | while IFS= read -r -d '' shell_file; do
     first_line="$(head -n 1 "$shell_file" 2>/dev/null || true)"
     if [[ "$first_line" == *bash* ]]; then
         bash -n "$shell_file"
     else
         sh -n "$shell_file"
     fi
-done < <(find "$PROJECT" -type f -name '*.sh' -print0)
+done
 if command -v node >/dev/null 2>&1; then
     note "Node.js found; checking shipped JavaScript syntax as an additional developer test..."
-    while IFS= read -r -d '' javascript_file; do
+    find "$PROJECT/rss_reader/static" -type f -name '*.js' -print0 \
+        | while IFS= read -r -d '' javascript_file; do
         node --check "$javascript_file"
-    done < <(find "$PROJECT/rss_reader/static" -type f -name '*.js' -print0)
+    done
 else
     note "Node.js is absent; JavaScript syntax check skipped. DistillFeed users do not need Node.js."
 fi
@@ -1061,8 +1108,13 @@ note "Running isolated installed-wheel CLI smoke checks..."
     "$DISTILLFEED" --config "$CONFIG" doctor
 )
 
-PLUGIN_STATE="$("$DISTILLFEED" --config "$CONFIG" plugin list)"
-"$RUNTIME_VENV/bin/python" - "$PLUGIN_STATE" "$EXPECTED_VERSION" "$PROJECT" <<'PY'
+PLUGIN_STATE="$(
+    cd "$SMOKE_ROOT"
+    "$DISTILLFEED" --config "$CONFIG" plugin list
+)"
+(
+cd "$SMOKE_ROOT"
+"$RUNTIME_VENV/bin/python" - "$PLUGIN_STATE" "$EXPECTED_VERSION" "$PROJECT" "$RUNTIME_VENV" <<'PY'
 import importlib.metadata
 import json
 import sys
@@ -1071,6 +1123,7 @@ from pathlib import Path
 state = json.loads(sys.argv[1])
 expected = sys.argv[2]
 source = Path(sys.argv[3]).resolve()
+runtime = Path(sys.argv[4]).resolve()
 if "arxiv_digest" not in state.get("installed", []):
     raise SystemExit("Bundled arxiv_digest entry point is not installed")
 if "arxiv_digest" in state.get("enabled", []):
@@ -1081,8 +1134,11 @@ import rss_reader
 installed_path = Path(rss_reader.__file__).resolve()
 if installed_path.is_relative_to(source):
     raise SystemExit("Smoke checks imported the extracted source instead of the installed wheel")
+if not installed_path.is_relative_to(runtime):
+    raise SystemExit(f"Smoke checks imported code outside the runtime environment: {installed_path}")
 print("Installed package:", installed_path)
 PY
+)
 
 note "Running installed-wheel Flask smoke checks..."
 (

@@ -173,6 +173,30 @@ def test_mobile_push_processing_cannot_turn_a_digest_into_a_failed_run(configure
     }
 
 
+def test_plugin_only_update_reports_an_existing_digest_as_up_to_date(configured, monkeypatch):
+    monkeypatch.setattr(
+        "rss_reader.service.summarize_plugins",
+        lambda *args, **kwargs: {
+            "succeeded": 0,
+            "failed": 0,
+            "blocked": 0,
+            "plugins": [{
+                "name": "arxiv_digest",
+                "status": "unchanged",
+                "message": "The daily arXiv digest is already up to date",
+            }],
+        },
+    )
+
+    result = run_summary(
+        configured, include_plugins=True, include_generic=False,
+    )
+
+    assert result["status"] == "unchanged"
+    assert result["message"] == "The daily arXiv digest is already up to date"
+    assert result["plugin_summaries_succeeded"] == 0
+
+
 def test_periodic_refresh_to_summary_to_mobile_push_transition(configured, monkeypatch):
     configured.data["app"]["auto_summarize_after_refresh"] = True
     calls = []

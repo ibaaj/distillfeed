@@ -114,7 +114,7 @@ def test_item_details_date_hierarchy_and_portable_exports(configured):
     summaries = client.get("/summaries")
     assert b"Print / PDF" in summaries.data
     assert b'aria-label="Print or save summaries as PDF"' in summaries.data
-    assert b"summary.js?v=0.23.4" in summaries.data
+    assert b"summary.js?v=0.23.5" in summaries.data
 
 
 def test_standalone_page_headers_keep_actions_compact(configured):
@@ -160,6 +160,10 @@ def test_item_panel_always_loads_stored_dates_and_caps_only_ai_relevance_per_day
     assert b"mode === 'relevance' ? selectedPerDayLimit()" in script
     assert b"matchesPerDayLimit" in script
     assert b"All articles for every stored day" in script
+    stylesheet = client.get("/static/app.css").data
+    assert b'grid-template-areas: "refresh sort limit text"' in stylesheet
+    assert b'grid-template-areas: "refresh refresh text" "sort limit limit"' in stylesheet
+    assert b".item-view-description { max-width: none" in stylesheet
 
 
 def test_top_ai_ranked_is_a_global_page_and_not_a_saved_collection(configured):
@@ -515,7 +519,7 @@ def test_notification_panel_separates_feed_health_from_ai_capacity(configured):
     assert b">40</td>" in page.data
     assert b"left 3 eligible items queued" not in page.data
     assert b"Alerts sent to other devices with ntfy" in page.data
-    assert b"Sending alerts to other devices is off" in page.data
+    assert b"The Ntfy service is off" in page.data
     assert b"Background schedule" in page.data
 
 
@@ -706,7 +710,7 @@ def test_mobile_layers_narrow_pane_controls_and_favicon_are_bounded(configured):
     assert b'class="nav-menu main-menu"' in page.data
     assert b'<span class="toolbar-label">Menu</span>' in page.data
     assert b'class="action-menu scope-actions"' in page.data
-    favicon = b'<link rel="icon" type="image/svg+xml" href="/static/distillfeed-icon.svg?v=0.23.4">'
+    favicon = b'<link rel="icon" type="image/svg+xml" href="/static/distillfeed-icon.svg?v=0.23.5">'
     for path in ("/", "/summaries", "/history", "/health", "/notifications", "/costs", "/saved?view=favorites"):
         response = client.get(path)
         assert response.status_code == 200
@@ -732,7 +736,7 @@ def test_settings_are_one_atomic_form_with_contained_responsive_sections(configu
     assert settings.count(b'id="save-settings-button"') == 1
     assert settings.count(b'id="settings-close-button"') == 1
     panel_count = settings.count(b'data-settings-panel')
-    assert panel_count == 6
+    assert panel_count == 8
     assert settings.count(b'data-settings-target=') == panel_count
     assert settings.count(b'class="settings-nav-button settings-nav-link"') == 0
     assert b'id="settings-ai"' in settings
@@ -868,7 +872,7 @@ def test_ntfy_group_and_feed_thresholds_save_with_the_settings_transaction(confi
         ).lastrowid
     client = create_app(str(configured.path)).test_client()
     page = client.get("/")
-    assert b"Send alerts to other devices with ntfy" in page.data
+    assert b"Configure outbound delivery to phones and other ntfy clients" in page.data
     assert f'notifications.ntfy.scopes.group.{parent}.enabled'.encode() in page.data
     assert f'notifications.ntfy.scopes.feed.{feed}.threshold'.encode() in page.data
     response = client.post(
@@ -1304,8 +1308,11 @@ def test_all_summaries_page_contains_active_feed_summary(configured):
         ).lastrowid
         second_summary = connection.execute(
             """INSERT INTO summaries(llm_run_id,group_id,changes,sections_json,created_at)
-               VALUES(?,?,?,'[]',?)""",
-            (second_run, group_id, "A follow-up was published.", utcnow()),
+               VALUES(?,?,?,?,?)""",
+            (
+                second_run, group_id, "A follow-up was published.",
+                '[{"heading":"Theme","body":"Model-grouped overview."}]', utcnow(),
+            ),
         ).lastrowid
         connection.execute(
             """INSERT INTO summary_items(summary_id,item_id,included,rank,importance,description,justification)
@@ -1326,6 +1333,11 @@ def test_all_summaries_page_contains_active_feed_summary(configured):
     assert f'class="summary-locate-item" type="button" data-item-id="{second_item_id}"'.encode() in reader_page.data
     assert b'id="summary-item-list"' in reader_page.data
     assert b"follows the visible item-panel order" in reader_page.data
+    assert b"Articles in item-panel order" in reader_page.data
+    assert b"Thematic overview" in reader_page.data
+    assert reader_page.data.index(b'id="summary-item-list"') < reader_page.data.index(
+        b'class="digest-sections"'
+    )
     script = app.test_client().get("/static/app.js").data
     assert b"function syncSummaryOrder()" in script
     assert b"syncSummaryOrder();" in script
