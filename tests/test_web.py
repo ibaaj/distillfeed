@@ -114,7 +114,7 @@ def test_item_details_date_hierarchy_and_portable_exports(configured):
     summaries = client.get("/summaries")
     assert b"Print / PDF" in summaries.data
     assert b'aria-label="Print or save summaries as PDF"' in summaries.data
-    assert b"summary.js?v=0.23.2" in summaries.data
+    assert b"summary.js?v=0.23.3" in summaries.data
 
 
 def test_standalone_page_headers_keep_actions_compact(configured):
@@ -127,6 +127,32 @@ def test_standalone_page_headers_keep_actions_compact(configured):
     stylesheet = client.get("/static/app.css").data
     assert b".page-header > .page-actions { justify-self: end; }" in stylesheet
     assert b".page-header .button-link { width: auto;" in stylesheet
+
+
+def test_item_panel_can_expand_from_latest_thousand_to_every_stored_date(configured):
+    with connect(configured.database_path) as connection:
+        group_id = connection.execute(
+            "INSERT INTO groups(title,position,created_at) VALUES('Archive',0,?)", (utcnow(),)
+        ).lastrowid
+        feed_id = connection.execute(
+            "INSERT INTO feeds(group_id,title,xml_url,created_at) VALUES(?,?,?,?)",
+            (group_id, "Long history", "https://example.test/history.xml", utcnow()),
+        ).lastrowid
+        connection.executemany(
+            """INSERT INTO items(feed_id,stable_id,title,discovered_at)
+               VALUES(?,?,?,?)""",
+            [
+                (feed_id, f"history-{index}", f"Historical item {index}", f"2024-01-{1 + index % 28:02d}T00:00:00+00:00")
+                for index in range(1002)
+            ],
+        )
+    client = create_app(str(configured.path)).test_client()
+    recent = client.get(f"/?feed={feed_id}")
+    assert recent.data.count(b'class="item-row') == 1000
+    assert b"Show all stored items \xc2\xb7 every date" in recent.data
+    complete = client.get(f"/?feed={feed_id}&all_items=1")
+    assert complete.data.count(b'class="item-row') == 1002
+    assert b"Show latest 1,000 items" in complete.data
 
 
 def test_optional_basic_auth_rejects_missing_and_accepts_configured_password(configured, monkeypatch):
@@ -185,7 +211,7 @@ def test_page_and_subscription_mutations(configured, monkeypatch):
     assert b"Check feeds" in page.data
     assert b"AI relevance" in page.data
     assert b"LLM relevance" not in page.data
-    assert b'href="/ai"' in page.data
+    assert b'href="/?settings=ai"' in page.data
     assert b"Review and update summaries" not in page.data
     assert b"Update AI summaries" not in page.data
     assert b'id="scope-update-button"' not in page.data  # no group exists yet
@@ -630,7 +656,7 @@ def test_mobile_layers_narrow_pane_controls_and_favicon_are_bounded(configured):
     assert b'class="nav-menu main-menu"' in page.data
     assert b'<span class="toolbar-label">Menu</span>' in page.data
     assert b'class="action-menu scope-actions"' in page.data
-    favicon = b'<link rel="icon" type="image/svg+xml" href="/static/distillfeed-icon.svg?v=0.23.2">'
+    favicon = b'<link rel="icon" type="image/svg+xml" href="/static/distillfeed-icon.svg?v=0.23.3">'
     for path in ("/", "/summaries", "/history", "/health", "/notifications", "/costs", "/saved?view=favorites"):
         response = client.get(path)
         assert response.status_code == 200
@@ -659,12 +685,57 @@ def test_settings_are_one_atomic_form_with_contained_responsive_sections(configu
     assert panel_count == 6
     assert settings.count(b'data-settings-target=') == panel_count
     assert settings.count(b'class="settings-nav-button settings-nav-link"') == 0
-    assert b'id="settings-ai"' in settings and b'href="/ai#queue"' in settings
+    assert b'id="settings-ai"' in settings
+    assert b'href="/ai#queue"' not in settings
+    assert b'id="settings-ai-queue-module"' in settings
+    assert b'id="settings-ai-sources-module"' in settings
+    assert b'data-settings-source-kind="groups"' not in settings  # no sources in this fixture
+    assert b'Detailed arXiv configuration' not in settings
+    assert b'href="/ai#arxiv"' not in settings
+    assert b'plugin.arxiv_digest.arxiv.categories' in settings
     assert b'id="ntfy-test-button"' in settings
     assert settings.index(b'id="settings-advanced"') < settings.index(b'id="data-tools-button"')
     assert settings.count(b'data-config-path=') == len(set(re.findall(rb'data-config-path="([^"]+)"', settings)))
     assert b'data-config-path="llm.model"' in settings
     assert b'data-config-path="notifications.ntfy.topic"' in settings
+
+
+def test_settings_contain_ai_source_and_queue_transitions_without_external_submenus(configured):
+    with connect(configured.database_path) as connection:
+        group_id = connection.execute(
+            "INSERT INTO groups(title,position,created_at) VALUES('Settings source',0,?)", (utcnow(),)
+        ).lastrowid
+        feed_id = connection.execute(
+            "INSERT INTO feeds(group_id,title,xml_url,created_at) VALUES(?,?,?,?)",
+            (group_id, "Settings feed", "https://example.test/settings.xml", utcnow()),
+        ).lastrowid
+    client = create_app(str(configured.path)).test_client()
+    page = client.get("/")
+    settings = page.data[page.data.index(b'<dialog id="settings-dialog"'):page.data.index(b'</form></dialog>', page.data.index(b'<dialog id="settings-dialog"'))]
+    assert f'data-settings-source-kind="groups" data-settings-source-id="{group_id}"'.encode() in settings
+    assert f'data-settings-source-kind="feeds" data-settings-source-id="{feed_id}"'.encode() in settings
+    assert b'id="settings-ai-queue-search"' in settings
+    assert b'id="settings-ai-queue-list"' in settings
+    assert b'Detailed arXiv configuration' not in settings
+    assert b'href="/ai#' not in settings
+    assert b'<h4>Local screening and AI ranking</h4>' in settings
+    assert b'<h4>Retrieval and recovery</h4>' in settings
+    assert b'<h4>ArXiv-specific Ntfy delivery</h4>' in settings
+    ai_page = client.get("/ai")
+    assert b'data-ai-panel="arxiv"' not in ai_page.data
+    assert b'data-ai-content="arxiv"' not in ai_page.data
+    script = client.get("/static/app.js").data
+    assert b"async function loadSettingsQueue()" in script
+    assert b"document.querySelectorAll('.settings-source-row')" in script
+    assert b"Save or discard the main Settings changes" in script
+
+
+def test_service_worker_revalidates_shell_and_never_caches_api(configured):
+    worker = create_app(str(configured.path)).test_client().get("/static/service-worker.js").data
+    assert b"distillfeed-v18" in worker
+    assert b"url.pathname.startsWith('/api/')" in worker
+    assert b"fetch(event.request, { cache: 'no-cache' })" in worker
+    assert b"caches.match(event.request).then(cached => cached || fetch(event.request))" not in worker
 
 
 def test_ntfy_test_push_requires_csrf_and_returns_delivery_status(configured, monkeypatch):

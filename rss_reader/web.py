@@ -67,6 +67,7 @@ from .plugins import (
     set_plugin_runtime_state,
     update_plugin_settings,
 )
+from .presentation import render_summary_markdown
 from .scheduler import BackgroundScheduler, defer_next_refresh
 from .service import run_refresh, run_summary, run_update_summaries, start_thread
 from .weather import get_weather
@@ -368,7 +369,7 @@ def _cluster_summary_items(rows) -> list[dict[str, Any]]:
 
 def _page_data(
     connection, config: Config, group_id: int | None, feed_id: int | None,
-    rolling_hours: int = 24,
+    rolling_hours: int = 24, *, show_all_items: bool = False,
 ) -> dict[str, Any]:
     tree = _group_tree(connection)
     all_groups = connection.execute(
@@ -462,6 +463,7 @@ def _page_data(
     summary_items = []
     summary_stale = False
     scope_pending_items = 0
+    scope_item_count = 0
     scope_arxiv_error = None
     scope_title = (
         feed_lookup[feed_id]["title"] if feed_id is not None
@@ -474,6 +476,12 @@ def _page_data(
         active_marks = ",".join(str(identifier) for identifier in sorted(enabled_group_ids)) or "NULL"
         where = "i.feed_id=?" if feed_id is not None else f"f.group_id IN ({marks})"
         parameters = [feed_id] if feed_id is not None else group_ids
+        scope_item_count = int(connection.execute(
+            f"""SELECT COUNT(*) FROM items i JOIN feeds f ON f.id=i.feed_id
+                 WHERE f.enabled=1 AND {where}""",
+            parameters,
+        ).fetchone()[0])
+        item_limit = "" if show_all_items else "LIMIT 1000"
         items = connection.execute(
             f"""SELECT i.*, f.title AS feed_title, eval.relevance AS relevance,
                        eval.justification AS relevance_justification
@@ -483,7 +491,7 @@ def _page_data(
                 FROM items i JOIN feeds f ON f.id=i.feed_id
                 LEFT JOIN ai_evaluations eval ON eval.item_id=i.id AND eval.current=1
                 WHERE f.enabled=1 AND {where}
-                ORDER BY i.is_read, COALESCE(i.published_at, i.discovered_at) DESC LIMIT 1000""",
+                ORDER BY i.is_read, COALESCE(i.published_at, i.discovered_at) DESC {item_limit}""",
             parameters,
         ).fetchall()
         summary_feed_id = None if is_arxiv_scope else feed_id
@@ -585,6 +593,8 @@ def _page_data(
         "summary_minimum_relevance": int(config.get("llm", "minimum_relevance", 70)),
         "summary_evidence_hours": int(config.get("llm", "rolling_digest_hours", 24)),
         "scope_pending_items": scope_pending_items,
+        "scope_item_count": scope_item_count,
+        "show_all_items": show_all_items,
         "scope_arxiv_error": scope_arxiv_error,
         "summary_stale": summary_stale,
         "system_notices": system_notices,
@@ -991,6 +1001,7 @@ def create_app(config_path: str | None = None) -> Flask:
     app.jinja_env.globals["display_timestamp"] = _display_timestamp
     app.jinja_env.globals["ai_task_label"] = _ai_task_label
     app.jinja_env.globals["display_ai_error"] = _display_ai_error
+    app.jinja_env.filters["summary_markup"] = render_summary_markdown
 
     @app.get("/healthz")
     def healthcheck():
@@ -1030,6 +1041,7 @@ def create_app(config_path: str | None = None) -> Flask:
             data = _page_data(
                 connection, config, request.args.get("group", type=int), request.args.get("feed", type=int),
                 int(config.get("llm", "rolling_digest_hours")),
+                show_all_items=request.args.get("all_items") == "1",
             )
             # SQLite rows are immutable; installed plugins receive ordinary
             # dictionaries and can add presentation metadata without changing
@@ -1041,15 +1053,28 @@ def create_app(config_path: str | None = None) -> Flask:
                     "minimum_relevance", 85
                 )),
             )
+            data["settings_ai_groups"] = [dict(row) for row in data["groups"]]
+            data["settings_ai_feeds"] = [dict(row) for row in connection.execute(
+                """SELECT f.id,f.group_id,f.title,f.ai_mode,g.title AS group_title
+                     FROM feeds f JOIN groups g ON g.id=f.group_id
+                     WHERE f.enabled=1 AND f.xml_url NOT LIKE 'plugin://%'
+                     ORDER BY g.title COLLATE NOCASE,f.title COLLATE NOCASE"""
+            ).fetchall()]
         core_fields = _flatten_config(config.data)
+        arxiv_fields = [
+            field for field in plugin_settings_fields(config)
+            if str(field.get("path", "")).startswith("plugin.arxiv_digest.")
+        ]
         return render_template(
             "index.html", **data, auto_refresh=config.get("app", "auto_refresh_on_load"),
             refresh_interval_minutes=config.get("app", "refresh_interval_minutes"),
             summary_language=config.get("app", "summary_language"),
             interest_profile=str(config.get("app", "interest_profile"))[:2000],
             config_fields=core_fields, ui=config.section("ui"),
+            arxiv_fields=arxiv_fields,
             app_mode=config.get("app", "mode"),
             arxiv_available="arxiv_digest" in available_plugin_names(),
+            arxiv_enabled=bool(config.get("plugins", "arxiv_digest_enabled", False)),
             generated_feeds_enabled=config.generated_feed_directory is not None,
         )
 
@@ -1121,7 +1146,6 @@ def create_app(config_path: str | None = None) -> Flask:
                 connection, config, group_id=selected_group_id,
                 feed_id=selected_feed_id, plan=plan,
             )
-            arxiv_ready = arxiv_readiness(connection, config, require_enabled=False)
             enabled_groups = set(llm_enabled_group_ids(connection))
             group_modes = effective_group_modes(connection)
             group_rows = connection.execute(
@@ -1197,23 +1221,6 @@ def create_app(config_path: str | None = None) -> Flask:
                     "SELECT name FROM job_locks WHERE expires_at>=?", (utcnow(),)
                 ).fetchall()
             }
-            arxiv_state: dict[str, Any] = {}
-            arxiv_last_run = None
-            if bool(config.get("plugins", "arxiv_digest_enabled", False)):
-                try:
-                    arxiv_state = {
-                        str(row["key"]): str(row["value"])
-                        for row in connection.execute(
-                            "SELECT key,value FROM distillfeed_arxiv_state"
-                        ).fetchall()
-                    }
-                    arxiv_last_run = _run_for_display(connection.execute(
-                        """SELECT * FROM llm_runs
-                           WHERE prompt_version LIKE 'distillfeed-arxiv-%'
-                           ORDER BY id DESC LIMIT 1"""
-                    ).fetchone())
-                except Exception:
-                    arxiv_state = {}
         workload = str(config.get("llm", "review_workload", "balanced"))
         return render_template(
             "ai.html", queue=queue, groups=groups, ai_feeds=ai_feeds,
@@ -1225,17 +1232,9 @@ def create_app(config_path: str | None = None) -> Flask:
             queue_page_count=queue_page_count,
             queue_view=queue_view, queue_query=queue_query,
             include_inactive=include_inactive, plan=plan,
-            readiness=readiness, arxiv_readiness=arxiv_ready,
+            readiness=readiness,
             selected_feed_id=selected_feed_id, selected_group_id=selected_group_id,
             selected_scope_title=selected_scope_title,
-            arxiv_available="arxiv_digest" in available_plugin_names(),
-            arxiv_enabled=bool(config.get("plugins", "arxiv_digest_enabled", False)),
-            arxiv_state=arxiv_state,
-            arxiv_last_run=arxiv_last_run,
-            arxiv_fields=[
-                field for field in plugin_settings_fields(config)
-                if str(field.get("path", "")).startswith("plugin.arxiv_digest.")
-            ],
         )
 
     @app.get("/api/ai/plan")
@@ -1397,12 +1396,30 @@ def create_app(config_path: str | None = None) -> Flask:
         if selected_status not in allowed_statuses:
             selected_status = "all"
         query = str(request.args.get("q", "")).strip()[:200]
+        selected_category = str(request.args.get("category", "")).strip()[:40]
+        selected_sort = str(request.args.get("sort", "newest")).strip().casefold()
+        sort_options = {
+            "newest": "COALESCE(i.published_at,i.discovered_at) DESC,i.id DESC",
+            "oldest": "COALESCE(i.published_at,i.discovered_at) ASC,i.id ASC",
+            "ai-high": "ap.llm_score IS NULL,ap.llm_score DESC,COALESCE(i.published_at,i.discovered_at) DESC",
+            "ai-low": "ap.llm_score IS NULL,ap.llm_score ASC,COALESCE(i.published_at,i.discovered_at) DESC",
+            "local-high": "ap.local_score IS NULL,ap.local_score DESC,COALESCE(i.published_at,i.discovered_at) DESC",
+            "local-low": "ap.local_score IS NULL,ap.local_score ASC,COALESCE(i.published_at,i.discovered_at) DESC",
+            "combined-high": "ap.final_score IS NULL,ap.final_score DESC,COALESCE(i.published_at,i.discovered_at) DESC",
+            "combined-low": "ap.final_score IS NULL,ap.final_score ASC,COALESCE(i.published_at,i.discovered_at) DESC",
+            "status": "CASE WHEN ap.evaluation_status='pending' THEN 0 WHEN ap.evaluation_status='screened_out' THEN 1 WHEN ap.decision='keep' THEN 2 ELSE 3 END,COALESCE(i.published_at,i.discovered_at) DESC",
+            "title": "i.title COLLATE NOCASE,i.id DESC",
+            "category": "ap.primary_category COLLATE NOCASE,COALESCE(i.published_at,i.discovered_at) DESC",
+        }
+        if selected_sort not in sort_options:
+            selected_sort = "newest"
         with connect(config.database_path) as connection:
             available = bool(connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='distillfeed_arxiv_papers'"
             ).fetchone())
             counts = {key: 0 for key in allowed_statuses}
             items: list[Any] = []
+            categories: list[str] = []
             total = 0
             if available:
                 row = connection.execute(
@@ -1420,6 +1437,19 @@ def create_app(config_path: str | None = None) -> Flask:
                     "kept": int(row["kept_count"] or 0),
                     "dropped": int(row["dropped_count"] or 0),
                 }
+                category_names: set[str] = set()
+                for category_row in connection.execute(
+                    "SELECT categories_json,primary_category FROM distillfeed_arxiv_papers"
+                ).fetchall():
+                    category_names.update(
+                        str(value).strip() for value in _json_list(category_row["categories_json"])
+                        if str(value).strip()
+                    )
+                    if category_row["primary_category"]:
+                        category_names.add(str(category_row["primary_category"]).strip())
+                categories = sorted(category_names, key=str.casefold)
+                if selected_category not in category_names:
+                    selected_category = ""
                 conditions: list[str] = []
                 parameters: list[Any] = []
                 status_sql = {
@@ -1430,10 +1460,17 @@ def create_app(config_path: str | None = None) -> Flask:
                 }
                 if selected_status != "all":
                     conditions.append(status_sql[selected_status])
+                if selected_category:
+                    conditions.append("ap.categories_json LIKE ?")
+                    parameters.append(f'%"{selected_category}"%')
                 if query:
-                    conditions.append("(i.title LIKE ? OR i.author LIKE ? OR ap.arxiv_id LIKE ?)")
+                    conditions.append(
+                        "(i.title LIKE ? OR i.author LIKE ? OR i.description_text LIKE ? "
+                        "OR ap.arxiv_id LIKE ? OR ap.why LIKE ? OR ap.local_reasons_json LIKE ? "
+                        "OR ap.categories_json LIKE ?)"
+                    )
                     pattern = f"%{query}%"
-                    parameters.extend((pattern, pattern, pattern))
+                    parameters.extend((pattern,) * 7)
                 where = "WHERE " + " AND ".join(conditions) if conditions else ""
                 total = int(connection.execute(
                     f"""SELECT COUNT(*) FROM distillfeed_arxiv_papers ap
@@ -1442,24 +1479,38 @@ def create_app(config_path: str | None = None) -> Flask:
                 ).fetchone()[0])
                 page_count = max(1, (total + page_size - 1) // page_size)
                 page = min(page, page_count)
-                items = connection.execute(
+                rows = connection.execute(
                     f"""SELECT i.*,f.title AS feed_title,ap.arxiv_id,ap.pdf_url,
                                 ap.local_score,ap.llm_score,ap.final_score,ap.decision,
-                                ap.why,ap.evaluation_status,ap.local_reasons_json
+                                ap.why,ap.evaluation_status,ap.local_reasons_json,
+                                ap.categories_json,ap.primary_category
                            FROM distillfeed_arxiv_papers ap
                            JOIN items i ON i.id=ap.item_id
                            JOIN feeds f ON f.id=i.feed_id
                            {where}
-                          ORDER BY COALESCE(i.published_at,i.discovered_at) DESC,i.id DESC
+                          ORDER BY {sort_options[selected_sort]}
                           LIMIT ? OFFSET ?""",
                     [*parameters, page_size, (page - 1) * page_size],
                 ).fetchall()
+                items = []
+                for row in rows:
+                    item = dict(row)
+                    item["categories"] = [str(value) for value in _json_list(row["categories_json"])]
+                    reasons = _json_list(row["local_reasons_json"])
+                    item["local_reasons"] = [
+                        str(reason.get("reason") or reason.get("label") or reason)
+                        if isinstance(reason, dict) else str(reason)
+                        for reason in reasons
+                    ]
+                    items.append(item)
             else:
                 page_count = 1
         return render_template(
             "arxiv.html", items=items, counts=counts, total=total,
             selected_status=selected_status, query=query, page=page,
             page_count=page_count, available=available, ui=config.section("ui"),
+            categories=categories, selected_category=selected_category,
+            selected_sort=selected_sort,
         )
 
     @app.get("/api/backup")

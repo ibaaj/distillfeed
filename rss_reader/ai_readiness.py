@@ -177,7 +177,7 @@ def arxiv_readiness(connection, config: Config, *, require_enabled: bool = True)
         blockers.append({
             "code": "ARXIV_DISABLED",
             "message": "The arXiv daily digest is disabled.",
-            "action_url": "/ai#arxiv",
+            "action_url": "/?settings=arxiv",
             "action_label": "Enable arXiv digest",
         })
     try:
@@ -189,7 +189,7 @@ def arxiv_readiness(connection, config: Config, *, require_enabled: bool = True)
             "status": "blocked", "can_start": False, "enabled": enabled,
             "blockers": [{
                 "code": "ARXIV_CONFIG_INVALID", "message": str(exc)[:1000],
-                "action_url": "/ai#arxiv", "action_label": "Review arXiv settings",
+                "action_url": "/?settings=arxiv", "action_label": "Review ArXiv settings",
             }],
             "warnings": [], "plan": {},
             "budget": budget_snapshot(connection, config),
@@ -198,7 +198,7 @@ def arxiv_readiness(connection, config: Config, *, require_enabled: bool = True)
         blockers.append({
             "code": "ARXIV_AI_DISABLED",
             "message": "arXiv papers are waiting, but AI ranking and digest writing are disabled.",
-            "action_url": "/ai#arxiv",
+            "action_url": "/?settings=arxiv",
             "action_label": "Enable arXiv AI",
         })
     if enabled:

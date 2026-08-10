@@ -604,7 +604,13 @@
     const ntfyEnabled = settingsControls.find(input => input.dataset.configPath === 'notifications.ntfy.enabled')?.checked;
     if (ntfyTestButton) ntfyTestButton.disabled = settingsSaving || settingsDirty || !ntfyEnabled;
     settingsForm?.querySelectorAll('.plugin-settings-action').forEach(button => {
-      button.disabled = settingsSaving || settingsDirty;
+      button.disabled = settingsSaving || settingsDirty || button.dataset.staticDisabled === 'true';
+    });
+    settingsForm?.querySelectorAll('.settings-source-save').forEach(button => {
+      button.disabled = settingsSaving || settingsDirty || button.dataset.changed !== 'true';
+    });
+    settingsForm?.querySelectorAll('.settings-queue-list button').forEach(button => {
+      button.disabled = settingsSaving || settingsDirty || button.dataset.pending === 'true';
     });
     if (settingsStatus && message !== null) {
       settingsStatus.classList.remove('error'); settingsStatus.textContent = message;
@@ -645,6 +651,84 @@
   window.addEventListener('beforeunload', event => {
     if (!settingsDirty || settingsSaving) return;
     event.preventDefault(); event.returnValue = '';
+  });
+  const settingsQueueModule = document.getElementById('settings-ai-queue-module');
+  const settingsQueueSearch = document.getElementById('settings-ai-queue-search');
+  const settingsQueueState = document.getElementById('settings-ai-queue-state');
+  const settingsQueueStatus = document.getElementById('settings-ai-queue-status');
+  const settingsQueueList = document.getElementById('settings-ai-queue-list');
+  let settingsQueueLoaded = false;
+  async function loadSettingsQueue() {
+    if (!settingsQueueList) return;
+    const parameters = new URLSearchParams({
+      page_size: '100', view: settingsQueueState?.value || 'ready', include_inactive: '1',
+    });
+    const query = settingsQueueSearch?.value.trim(); if (query) parameters.set('q', query);
+    if (settingsQueueStatus) settingsQueueStatus.textContent = 'Loading current entries…';
+    settingsQueueList.replaceChildren();
+    try {
+      const result = await api(`/api/ai/queue?${parameters.toString()}`);
+      result.items.forEach(item => {
+        const article = document.createElement('article'); article.dataset.itemId = item.item_id;
+        const state = document.createElement('span'); state.textContent = String(item.display_state || '').replaceAll('_', ' ');
+        const copy = document.createElement('div');
+        const title = document.createElement('strong'); title.textContent = item.title;
+        const source = document.createElement('small'); source.textContent = `${item.group_title} · ${item.feed_title}`;
+        copy.append(title, source);
+        const action = document.createElement('button'); action.type = 'button'; action.disabled = settingsDirty || settingsSaving;
+        const excluded = item.display_state === 'excluded'; action.textContent = excluded ? 'Restore' : 'Exclude';
+        action.addEventListener('click', async () => {
+          if (settingsDirty || settingsSaving) { notify('Save or discard Settings changes before changing the queue.'); return; }
+          action.dataset.pending = 'true'; action.disabled = true;
+          try {
+            await api('/api/items/ai-disposition', { method: 'POST', body: JSON.stringify({
+              item_ids: [Number(item.item_id)], disposition: excluded ? 'default' : 'excluded',
+            }) });
+            await loadSettingsQueue(); notify(excluded ? 'Entry restored' : 'Entry excluded from future AI updates');
+          } catch (error) { action.dataset.pending = 'false'; updateSettingsActions(); notify(error.message); }
+        });
+        article.append(state, copy, action); settingsQueueList.appendChild(article);
+      });
+      settingsQueueLoaded = true;
+      if (settingsQueueStatus) settingsQueueStatus.textContent = result.total
+        ? `${result.total.toLocaleString()} matching entr${result.total === 1 ? 'y' : 'ies'} · showing up to 100.`
+        : 'No entries match this state and search.';
+    } catch (error) {
+      if (settingsQueueStatus) settingsQueueStatus.textContent = `Could not load the queue: ${error.message}`;
+    }
+  }
+  settingsQueueModule?.addEventListener('toggle', () => {
+    if (settingsQueueModule.open && !settingsQueueLoaded) loadSettingsQueue();
+  });
+  document.getElementById('settings-ai-queue-load')?.addEventListener('click', loadSettingsQueue);
+  settingsQueueSearch?.addEventListener('keydown', event => {
+    if (event.key === 'Enter') { event.preventDefault(); loadSettingsQueue(); }
+  });
+
+  document.querySelectorAll('.settings-source-row').forEach(row => {
+    const controls = [...row.querySelectorAll('[data-settings-source-field]')];
+    const save = row.querySelector('.settings-source-save');
+    const snapshot = () => JSON.stringify(controls.map(control => control.value));
+    let stored = snapshot();
+    const update = () => {
+      if (!save) return;
+      save.dataset.changed = snapshot() === stored ? 'false' : 'true';
+      updateSettingsActions();
+    };
+    controls.forEach(control => { control.addEventListener('input', update); control.addEventListener('change', update); });
+    save?.addEventListener('click', async () => {
+      if (settingsDirty || settingsSaving) { notify('Save or discard the main Settings changes before saving a source.'); return; }
+      save.disabled = true; const payload = {};
+      controls.forEach(control => {
+        payload[control.dataset.settingsSourceField] = control.type === 'number' ? Number(control.value) : control.value;
+      });
+      try {
+        await api(`/api/${row.dataset.settingsSourceKind}/${row.dataset.settingsSourceId}`, {
+          method: 'PATCH', body: JSON.stringify(payload),
+        });
+        stored = snapshot(); update(); notify('Source configuration saved');
+      } catch (error) { update(); notify(error.message); }
+    });
   });
   document.getElementById('data-tools-button')?.addEventListener('click', () => {
     if (closeSettings({ reloadSaved: false })) openDialog(document.getElementById('data-dialog'));
@@ -1443,7 +1527,14 @@
   if ('serviceWorker' in navigator) {
     const offline = document.querySelector('meta[name="offline-cache-enabled"]')?.content === 'true';
     if (offline) navigator.serviceWorker.register('/static/service-worker.js').catch(() => {});
-    else navigator.serviceWorker.getRegistrations().then(registrations => registrations.forEach(registration => registration.unregister()));
+    else Promise.all([
+      navigator.serviceWorker.getRegistrations().then(registrations => Promise.all(
+        registrations.map(registration => registration.unregister())
+      )),
+      'caches' in window ? caches.keys().then(keys => Promise.all(
+        keys.filter(key => key.startsWith('distillfeed-')).map(key => caches.delete(key))
+      )) : Promise.resolve(),
+    ]).catch(() => {});
   }
   if (document.querySelectorAll('.top-actions button:disabled').length) monitorJobs(true);
 })();

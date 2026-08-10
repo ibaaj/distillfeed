@@ -470,16 +470,25 @@ def test_all_arxiv_archive_exposes_every_screening_state(configured):
                    VALUES(?,?,?,?,?,?,?,?,0)""",
                 (
                     feed_id, f"archive-{index}", f"Archive paper {index}",
-                    f"https://arxiv.org/abs/2608.1000{index}", "Researcher",
-                    f"2026-08-10T0{index}:00:00+00:00", utcnow(), "Abstract",
+                    f"https://arxiv.org/abs/2608.1000{index}",
+                    "Ada Logician" if index == 1 else "Researcher",
+                    f"2026-08-10T0{index}:00:00+00:00", utcnow(),
+                    "Unique proof-search abstract" if index == 1 else "Abstract",
                 ),
             ).lastrowid)
+            category = "cs.LO" if index == 1 else "cs.AI"
             connection.execute(
                 """INSERT INTO distillfeed_arxiv_papers(
                        item_id,arxiv_id,categories_json,primary_category,source,
-                       local_score,llm_score,decision,evaluation_status)
-                   VALUES(?,?,'["cs.AI"]','cs.AI','rss',?,?,?,?)""",
-                (item_id, f"2608.1000{index}", index, llm_score, decision, evaluation_status),
+                       local_score,llm_score,final_score,decision,why,
+                       local_reasons_json,evaluation_status)
+                   VALUES(?,?,?,?, 'rss',?,?,?,?,?,?,?)""",
+                (
+                    item_id, f"2608.1000{index}", f'["{category}"]', category,
+                    index, llm_score, (index * 10) if llm_score is not None else None,
+                    decision, "Unique rationale for logic" if index == 1 else "General rationale",
+                    '["keyword match"]', evaluation_status,
+                ),
             )
 
     client = create_app(str(configured.path)).test_client()
@@ -493,6 +502,15 @@ def test_all_arxiv_archive_exposes_every_screening_state(configured):
     assert b"AI kept" in kept.data and b"96" in kept.data
     searched = client.get("/arxiv?q=2608.10002")
     assert searched.data.count(b'class="item-row saved-row"') == 1
+    assert client.get("/arxiv?q=proof-search").data.count(b'class="item-row saved-row"') == 1
+    assert client.get("/arxiv?q=Unique+rationale").data.count(b'class="item-row saved-row"') == 1
+    logic = client.get("/arxiv?category=cs.LO")
+    assert logic.data.count(b'class="item-row saved-row"') == 1
+    assert b"Ada Logician" in logic.data and b"Unique proof-search abstract" in logic.data
+    sorted_ai = client.get("/arxiv?sort=ai-high")
+    assert sorted_ai.data.index(b"Archive paper 2") < sorted_ai.data.index(b"Archive paper 3")
+    assert b"Combined score" in sorted_ai.data
+    assert b"Abstract, authors, categories, and ranking rationale" in sorted_ai.data
 
 
 def test_same_day_late_evidence_creates_append_only_digest_revision(configured, monkeypatch):
