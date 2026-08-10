@@ -1,5 +1,5 @@
-const CACHE = 'distillfeed-v19';
-const SHELL = ['/static/app.css?v=0.23.5', '/static/app.js?v=0.23.5', '/static/manifest.webmanifest', '/static/distillfeed-icon.svg?v=0.23.5'];
+const CACHE = 'distillfeed-v20';
+const SHELL = ['/static/app.css?v=0.23.6', '/static/app.js?v=0.23.6', '/static/manifest.webmanifest', '/static/distillfeed-icon.svg?v=0.23.6'];
 
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)));

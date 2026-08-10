@@ -459,6 +459,10 @@ def test_arxiv_archive_and_rankings_follow_configured_category_scope(configured)
         feed_id = int(connection.execute(
             "SELECT id FROM feeds WHERE xml_url='plugin://arxiv/cs.AI'"
         ).fetchone()[0])
+        group_id = int(connection.execute(
+            "SELECT group_id FROM feeds WHERE id=?", (feed_id,),
+        ).fetchone()[0])
+        archive_item_ids: dict[int, int] = {}
         states = (
             ("pending", None, None),
             ("screened_out", "drop", None),
@@ -478,6 +482,7 @@ def test_arxiv_archive_and_rankings_follow_configured_category_scope(configured)
                     "Unique proof-search abstract" if index == 1 else "Abstract",
                 ),
             ).lastrowid)
+            archive_item_ids[index] = item_id
             category = "cs.LO" if index == 1 else "cs.AI"
             connection.execute(
                 """INSERT INTO distillfeed_arxiv_papers(
@@ -492,11 +497,38 @@ def test_arxiv_archive_and_rankings_follow_configured_category_scope(configured)
                     '["keyword match"]', evaluation_status,
                 ),
             )
+        run_id = int(connection.execute(
+            """INSERT INTO llm_runs(
+                   request_key,started_at,completed_at,status,model,prompt_version,pricing_json
+               ) VALUES('arxiv-score-order',?,?,'success','model','distillfeed-arxiv-test','{}')""",
+            (utcnow(), utcnow()),
+        ).lastrowid)
+        summary_id = int(connection.execute(
+            """INSERT INTO summaries(
+                   llm_run_id,group_id,scope_kind,scope_id,overview,created_at
+               ) VALUES(?,?,'group',?,'Digest',?)""",
+            (run_id, group_id, group_id, utcnow()),
+        ).lastrowid)
+        connection.execute(
+            """INSERT INTO summary_items(
+                   summary_id,item_id,included,rank,importance,description
+               ) VALUES(?,?,1,2,31,'Lower-scored arXiv paper')""",
+            (summary_id, archive_item_ids[3]),
+        )
+        connection.execute(
+            """INSERT INTO summary_items(
+                   summary_id,item_id,included,rank,importance,description
+               ) VALUES(?,?,1,1,96,'Higher-scored arXiv paper')""",
+            (summary_id, archive_item_ids[2]),
+        )
 
     client = create_app(str(configured.path)).test_client()
     reader = client.get(f"/?feed={feed_id}")
     assert b'data-sort-profile="relevance"' in reader.data
     assert b'id="relevance-per-day-limit"' in reader.data
+    summary_list = reader.data.split(b'id="summary-item-list"', 1)[1].split(b"</ul>", 1)[0]
+    assert summary_list.index(b"Archive paper 2") < summary_list.index(b"Archive paper 3")
+    assert b"Show in item panel" in summary_list
     all_page = client.get("/arxiv")
     assert all_page.status_code == 200
     assert b"All fetched papers" in all_page.data

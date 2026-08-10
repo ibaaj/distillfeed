@@ -254,7 +254,7 @@ def _arxiv_category_scope(
 
 
 def _order_reader_page(data: dict[str, Any]) -> None:
-    """Apply the initial item order and mirror it in the summary panel."""
+    """Order reader items and score-ranked summary articles independently."""
     profile = str(data.get("item_sort_profile") or "date")
 
     def item_key(item: dict[str, Any]) -> tuple[Any, ...]:
@@ -270,16 +270,27 @@ def _order_reader_page(data: dict[str, Any]) -> None:
         return day, timestamp, int(item.get("id") or 0)
 
     data["items"].sort(key=item_key, reverse=True)
-    positions = {
-        int(item["id"]): position for position, item in enumerate(data["items"])
-    }
+
+    def summary_key(item: dict[str, Any]) -> tuple[Any, ...]:
+        def value(name: str, default: Any = None) -> Any:
+            try:
+                return item[name]
+            except (IndexError, KeyError, TypeError):
+                return default
+
+        try:
+            score = float(value("importance"))
+        except (TypeError, ValueError):
+            score = -1.0
+        try:
+            rank = int(value("rank"))
+        except (TypeError, ValueError):
+            rank = 10**12
+        return -score, rank, int(value("item_id", 0) or 0)
+
     data["summary_items"] = sorted(
         data.get("summary_items", []),
-        key=lambda item: (
-            positions.get(int(item["item_id"]), 10**12),
-            -int(item["importance"] or 0),
-            int(item["rank"] or 0),
-        ),
+        key=summary_key,
     )
 
 

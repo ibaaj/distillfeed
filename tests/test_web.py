@@ -6,13 +6,40 @@ import pytest
 from rss_reader.db import connect, utcnow
 from rss_reader.config import load_config, save_config
 from rss_reader.opml import parse_opml_bytes
-from rss_reader.web import create_app
+from rss_reader.web import _order_reader_page, create_app
 
 
 def csrf_from(response) -> str:
     match = re.search(rb'<meta name="csrf-token" content="([^"]+)">', response.data)
     assert match
     return match.group(1).decode()
+
+
+def test_summary_articles_use_score_order_independently_of_item_order():
+    data = {
+        "item_sort_profile": "date",
+        "items": [
+            {"id": 1, "published_at": "2026-08-10T12:00:00+00:00", "relevance": 20},
+            {"id": 2, "published_at": "2026-08-10T11:00:00+00:00", "relevance": 40},
+            {"id": 3, "published_at": "2026-08-10T10:00:00+00:00", "relevance": 90},
+            {"id": 4, "published_at": "2026-08-10T09:00:00+00:00", "relevance": 90},
+        ],
+        "summary_items": [
+            {"item_id": 1, "importance": None, "rank": None},
+            {"item_id": 2, "importance": 40, "rank": 3},
+            {"item_id": 3, "importance": 90, "rank": 2},
+            {"item_id": 4, "importance": 90, "rank": 1},
+        ],
+    }
+
+    _order_reader_page(data)
+    assert [item["id"] for item in data["items"]] == [1, 2, 3, 4]
+    assert [item["item_id"] for item in data["summary_items"]] == [4, 3, 2, 1]
+
+    data["item_sort_profile"] = "relevance"
+    _order_reader_page(data)
+    assert [item["id"] for item in data["items"]] == [3, 4, 2, 1]
+    assert [item["item_id"] for item in data["summary_items"]] == [4, 3, 2, 1]
 
 
 def test_openai_model_presets_keep_cost_rates_in_sync(configured):
@@ -114,7 +141,7 @@ def test_item_details_date_hierarchy_and_portable_exports(configured):
     summaries = client.get("/summaries")
     assert b"Print / PDF" in summaries.data
     assert b'aria-label="Print or save summaries as PDF"' in summaries.data
-    assert b"summary.js?v=0.23.5" in summaries.data
+    assert b"summary.js?v=0.23.6" in summaries.data
 
 
 def test_standalone_page_headers_keep_actions_compact(configured):
@@ -710,7 +737,7 @@ def test_mobile_layers_narrow_pane_controls_and_favicon_are_bounded(configured):
     assert b'class="nav-menu main-menu"' in page.data
     assert b'<span class="toolbar-label">Menu</span>' in page.data
     assert b'class="action-menu scope-actions"' in page.data
-    favicon = b'<link rel="icon" type="image/svg+xml" href="/static/distillfeed-icon.svg?v=0.23.5">'
+    favicon = b'<link rel="icon" type="image/svg+xml" href="/static/distillfeed-icon.svg?v=0.23.6">'
     for path in ("/", "/summaries", "/history", "/health", "/notifications", "/costs", "/saved?view=favorites"):
         response = client.get(path)
         assert response.status_code == 200
@@ -786,7 +813,7 @@ def test_settings_contain_ai_source_and_queue_transitions_without_external_subme
 
 def test_service_worker_revalidates_shell_and_never_caches_api(configured):
     worker = create_app(str(configured.path)).test_client().get("/static/service-worker.js").data
-    assert b"distillfeed-v19" in worker
+    assert b"distillfeed-v20" in worker
     assert b"url.pathname.startsWith('/api/')" in worker
     assert b"fetch(event.request, { cache: 'no-cache' })" in worker
     assert b"caches.match(event.request).then(cached => cached || fetch(event.request))" not in worker
@@ -1319,6 +1346,30 @@ def test_all_summaries_page_contains_active_feed_summary(configured):
                VALUES(?,?,1,1,80,'New description','New reason')""",
             (second_summary, second_item_id),
         )
+        high_score_item_id = connection.execute(
+            "INSERT INTO items(feed_id,stable_id,title,url,discovered_at) VALUES(?,?,?,?,?)",
+            (
+                feed_id, "high-score", "Older high-score article",
+                "https://example.test/high-score", "2026-08-09T08:00:00+00:00",
+            ),
+        ).lastrowid
+        low_score_item_id = connection.execute(
+            "INSERT INTO items(feed_id,stable_id,title,url,discovered_at) VALUES(?,?,?,?,?)",
+            (
+                feed_id, "low-score", "Newer low-score article",
+                "https://example.test/low-score", "2026-08-11T08:00:00+00:00",
+            ),
+        ).lastrowid
+        connection.execute(
+            """INSERT INTO summary_items(summary_id,item_id,included,rank,importance,description)
+               VALUES(?,?,1,2,95,'Highest score')""",
+            (second_summary, high_score_item_id),
+        )
+        connection.execute(
+            """INSERT INTO summary_items(summary_id,item_id,included,rank,importance,description)
+               VALUES(?,?,1,3,25,'Lowest score')""",
+            (second_summary, low_score_item_id),
+        )
     page = app.test_client().get("/summaries")
     assert page.status_code == 200
     assert b"Important result" not in page.data
@@ -1332,21 +1383,32 @@ def test_all_summaries_page_contains_active_feed_summary(configured):
     assert f'data-summary-item-id="{second_item_id}"'.encode() in reader_page.data
     assert f'class="summary-locate-item" type="button" data-item-id="{second_item_id}"'.encode() in reader_page.data
     assert b'id="summary-item-list"' in reader_page.data
-    assert b"follows the visible item-panel order" in reader_page.data
-    assert b"Articles in item-panel order" in reader_page.data
+    assert b"follows the visible item-panel order" not in reader_page.data
+    assert b"Articles in item-panel order" not in reader_page.data
+    assert b"<h2>Articles</h2>" in reader_page.data
     assert b"Thematic overview" in reader_page.data
+    summary_list = reader_page.data.split(b'id="summary-item-list"', 1)[1].split(b"</ul>", 1)[0]
+    assert summary_list.index(b"Older high-score article") < summary_list.index(b"New follow-up")
+    assert summary_list.index(b"New follow-up") < summary_list.index(b"Newer low-score article")
+    assert f'data-summary-score="95"'.encode() in summary_list
+    assert f'data-summary-score="25"'.encode() in summary_list
     assert reader_page.data.index(b'id="summary-item-list"') < reader_page.data.index(
         b'class="digest-sections"'
     )
     script = app.test_client().get("/static/app.js").data
-    assert b"function syncSummaryOrder()" in script
-    assert b"syncSummaryOrder();" in script
+    assert b"function syncSummaryOrder()" not in script
+    assert b"syncSummaryOrder();" not in script
     assert b"itemSearch.value = ''" in script
     assert b"itemFilter.value = 'all'" in script
     assert b"button[data-view=\"items\"]" in script
     assert b"row.focus({ preventScroll: true })" in script
     assert b"row.scrollIntoView({ behavior: 'smooth', block: 'center' })" in script
     assert b"rolling view combines" not in reader_page.data
+    stylesheet = app.test_client().get("/static/app.css").data
+    assert b".summary-locate-item" in stylesheet
+    assert b"min-width: max-content" in stylesheet
+    assert b"flex: 0 0 auto" in stylesheet
+    assert b"white-space: nowrap" in stylesheet
     with connect(configured.database_path) as connection:
         connection.execute("UPDATE feeds SET llm_enabled=0 WHERE id=?", (feed_id,))
     active_page = app.test_client().get("/summaries")

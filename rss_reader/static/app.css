@@ -259,9 +259,9 @@ body.reader-page > .layout { flex: 1 1 auto; height: auto; min-height: 0; }
 .summary-markdown blockquote { margin: 8px 0; padding: 5px 10px; border-left: 3px solid var(--border); color: var(--muted); }
 .summary-markdown code { padding: 1px 4px; border-radius: 4px; background: var(--surface-2); font-size: .92em; }
 .justification > strong { display: block; margin-bottom: 2px; color: var(--text); }
-.summary-item-context { display: flex; align-items: center; gap: 7px; margin-bottom: 4px; color: var(--muted); font-size: 12px; }
-.summary-item-position, .summary-topic { padding: 2px 6px; border: 1px solid var(--border); border-radius: 999px; }
-.summary-locate-item { margin-left: auto; padding: 3px 7px; font-size: 12px; }
+.summary-item-context { min-width: 0; display: flex; flex-wrap: nowrap; align-items: center; gap: 7px; margin-bottom: 4px; color: var(--muted); font-size: 12px; }
+.summary-topic { min-width: 0; overflow: hidden; padding: 2px 6px; border: 1px solid var(--border); border-radius: 999px; white-space: nowrap; text-overflow: ellipsis; }
+.summary-locate-item { width: auto; min-width: max-content; flex: 0 0 auto; margin-left: auto; padding: 3px 7px; white-space: nowrap; font-size: 12px; line-height: 1.2; }
 .item-row.summary-located { outline: 3px solid var(--accent); outline-offset: -3px; }
 .summary-feed { color: var(--muted); font-size: 12px; }.cost-line { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
 .muted, .help { color: var(--muted); font-weight: normal; }.empty { color: var(--muted); padding: 16px; }

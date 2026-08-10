@@ -8,7 +8,7 @@ fi
 set -Eeuo pipefail
 umask 077
 
-EXPECTED_VERSION="0.23.5"
+EXPECTED_VERSION="0.23.6"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 DEFAULT_ARCHIVE="$SCRIPT_DIR/distillfeed-$EXPECTED_VERSION.tar.gz"
 
@@ -269,6 +269,49 @@ release_filesystem_locks() {
     fi
 }
 
+clean_distillfeed_metadata() {
+    local keep_version="${1:-}"
+    "$PYTHON" - "$keep_version" <<'PY'
+import re
+import shutil
+import sys
+import sysconfig
+from pathlib import Path
+
+keep_version = sys.argv[1]
+pattern = re.compile(r"distillfeed-([A-Za-z0-9_.+-]+)\.dist-info", re.IGNORECASE)
+editable_patterns = (
+    re.compile(r"__editable__\.distillfeed-[A-Za-z0-9_.+-]+\.pth", re.IGNORECASE),
+    re.compile(r"__editable___distillfeed_[A-Za-z0-9_]+_finder\.py", re.IGNORECASE),
+    re.compile(r"distillfeed\.egg-link", re.IGNORECASE),
+)
+roots = {
+    Path(value).resolve()
+    for key in ("purelib", "platlib")
+    if (value := sysconfig.get_path(key))
+}
+for root in sorted(roots):
+    if not root.is_dir():
+        continue
+    for candidate in root.iterdir():
+        match = pattern.fullmatch(candidate.name)
+        if not match or (keep_version and match.group(1) == keep_version):
+            continue
+        if candidate.is_symlink() or not candidate.is_dir():
+            raise SystemExit(f"Unsafe DistillFeed metadata path: {candidate}")
+        shutil.rmtree(candidate)
+        print("Removed stale distribution metadata:", candidate.name)
+    if not keep_version:
+        for candidate in root.iterdir():
+            if not any(pattern.fullmatch(candidate.name) for pattern in editable_patterns):
+                continue
+            if candidate.is_symlink() or not candidate.is_file():
+                raise SystemExit(f"Unsafe DistillFeed editable-install path: {candidate}")
+            candidate.unlink()
+            print("Removed stale editable-install metadata:", candidate.name)
+PY
+}
+
 release_maintenance_lock() {
     [[ "$MAINTENANCE_ACQUIRED" -eq 1 && -f "$RUNTIME_STATE" ]] || return 0
     if ! python3 - "$RUNTIME_STATE" "$LOCK_OWNER" <<'PY'
@@ -380,10 +423,13 @@ rollback() {
     restore_source || ROLLBACK_FAILED=1
     restore_data || ROLLBACK_FAILED=1
     if [[ -n "$OLD_WHEEL" && -f "$OLD_WHEEL" ]]; then
-        (
+        if ! (
             cd /
+            clean_distillfeed_metadata
             "$PYTHON" -m pip install --no-index --no-deps --force-reinstall "$OLD_WHEEL"
-        ) >/dev/null 2>&1 || ROLLBACK_FAILED=1
+        ) >/dev/null 2>&1; then
+            ROLLBACK_FAILED=1
+        fi
     else
         ROLLBACK_FAILED=1
     fi
@@ -1453,6 +1499,7 @@ done
 note "Installing the prebuilt wheel without network access and migrating local state..."
 (
     cd /
+    clean_distillfeed_metadata
     "$PYTHON" -m pip install --no-index --no-deps --force-reinstall "$NEW_WHEEL"
 )
 (
@@ -1460,6 +1507,10 @@ note "Installing the prebuilt wheel without network access and migrating local s
     "$PYTHON" -m rss_reader.cli --config "$CONFIG_PATH" init
     "$PYTHON" -m compileall -q "$INSTALL_DIR/rss_reader" "$INSTALL_DIR/distillfeed_arxiv"
     "$PYTHON" -m rss_reader.cli --config "$CONFIG_PATH" doctor
+    # A legacy editable install can restore an obsolete metadata directory
+    # while the migration commands import the managed source tree. Keep only
+    # the candidate record before validating the installed distribution.
+    clean_distillfeed_metadata "$EXPECTED_VERSION"
 )
 
 note "Verifying installed metadata and preserved user configuration..."
@@ -1472,6 +1523,12 @@ import distillfeed_arxiv
 import rss_reader
 
 expected = sys.argv[1]
+metadata_versions = [
+    distribution.version
+    for distribution in importlib.metadata.distributions()
+    if str(distribution.metadata.get("Name") or "").casefold() == "distillfeed"
+]
+print("Installed metadata versions:", ", ".join(metadata_versions) or "none")
 versions = {
     "metadata": importlib.metadata.version("distillfeed"),
     "rss_reader": rss_reader.__version__,

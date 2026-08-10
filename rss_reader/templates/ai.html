@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="csrf-token" content="{{ csrf_token() }}">
-  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='distillfeed-icon.svg', v='0.23.5') }}">
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='distillfeed-icon.svg', v='0.23.6') }}">
   <title>AI summaries · DistillFeed</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='0.23.5') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='0.23.6') }}">
 </head>
 <body class="summaries-page ai-policy-page{% if ui.dark_mode %} dark-mode{% endif %}" data-job-running="{{ 'true' if 'summary-update' in locks or 'llm-summary' in locks or 'feed-refresh' in locks else 'false' }}">
   <header class="topbar page-header">
@@ -138,6 +138,6 @@
     </form>
   </main>
   <div id="toast" role="status" aria-live="polite"></div>
-  <script src="{{ url_for('static', filename='ai.js', v='0.23.5') }}" defer></script>
+  <script src="{{ url_for('static', filename='ai.js', v='0.23.6') }}" defer></script>
 </body>
 </html>

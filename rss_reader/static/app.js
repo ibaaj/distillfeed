@@ -1187,48 +1187,6 @@
       if (heading) heading.textContent = `${group.dataset.dayLabel} · ${visible} item${visible === 1 ? '' : 's'}`;
     });
   }
-  function syncSummaryOrder() {
-    const summaryList = document.getElementById('summary-item-list');
-    const itemList = document.querySelector('.item-list');
-    if (!summaryList || !itemList) return;
-    const rows = [...itemList.querySelectorAll('.item-row')];
-    const positions = new Map(rows.map((row, index) => [row.dataset.itemId, index]));
-    const visiblePositions = new Map(
-      rows.filter(row => !row.hidden).map((row, index) => [row.dataset.itemId, index])
-    );
-    const entries = [...summaryList.querySelectorAll('[data-summary-item-id]')];
-    entries.sort((left, right) => {
-      const leftVisible = visiblePositions.get(left.dataset.summaryItemId);
-      const rightVisible = visiblePositions.get(right.dataset.summaryItemId);
-      if (leftVisible !== undefined || rightVisible !== undefined) {
-        return (leftVisible ?? Number.MAX_SAFE_INTEGER) - (rightVisible ?? Number.MAX_SAFE_INTEGER);
-      }
-      return (positions.get(left.dataset.summaryItemId) ?? Number.MAX_SAFE_INTEGER)
-        - (positions.get(right.dataset.summaryItemId) ?? Number.MAX_SAFE_INTEGER);
-    });
-    entries.forEach(entry => {
-      const visiblePosition = visiblePositions.get(entry.dataset.summaryItemId);
-      const position = positions.get(entry.dataset.summaryItemId);
-      const row = position === undefined ? null : rows[position];
-      const badge = entry.querySelector('.summary-item-position');
-      if (badge) {
-        if (visiblePosition !== undefined) {
-          badge.textContent = `Item ${visiblePosition + 1}`;
-          badge.setAttribute('aria-label', `Visible position ${visiblePosition + 1} in the item panel`);
-        } else if (row?.dataset.perDayVisible === '0') {
-          badge.textContent = 'Outside the current per-day limit';
-          badge.setAttribute('aria-label', 'Hidden by the current AI results per day setting');
-        } else if (position !== undefined) {
-          badge.textContent = 'Hidden by the current item filter';
-          badge.setAttribute('aria-label', 'Present in the item panel but hidden by its search or state filter');
-        } else {
-          badge.textContent = 'Not in this item view';
-          badge.setAttribute('aria-label', 'Not present in the current item panel');
-        }
-      }
-      summaryList.appendChild(entry);
-    });
-  }
   function selectedPerDayLimit() {
     if (!relevancePerDayLimit || relevancePerDayLimit.value === 'all') return Number.POSITIVE_INFINITY;
     const value = Number(relevancePerDayLimit.value);
@@ -1284,7 +1242,6 @@
     list.appendChild(fragment);
     updateItemViewControls(mode);
     updateDateGroupVisibility();
-    syncSummaryOrder();
   }
   if (itemSort) {
     const profile = document.querySelector('.item-list')?.dataset.sortProfile || 'date';
@@ -1365,7 +1322,6 @@
     }
     if (saveSelectedLater) saveSelectedLater.textContent = mode === 'read-later' ? 'Remove from Read later' : 'Add to Read later';
     updateSelectionState();
-    syncSummaryOrder();
   }
   itemSearch?.addEventListener('input', applyItemFilters);
   itemFilter?.addEventListener('change', applyItemFilters);
