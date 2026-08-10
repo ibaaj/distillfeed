@@ -13,8 +13,6 @@
       <a class="{% if selected_view == 'read-later' and not selected_tag %}selected{% endif %}" href="/saved?view=read-later">Read later</a>
       <a class="{% if selected_view == 'favorites' and not selected_tag %}selected{% endif %}" href="/saved?view=favorites">Favorites</a>
       <a class="{% if selected_view == 'tags' and not selected_tag %}selected{% endif %}" href="/saved?view=tags">All tagged items</a>
-      <a class="{% if selected_view == 'ai-ranked' and not selected_tag %}selected{% endif %}" href="/saved?view=ai-ranked">Top AI-ranked</a>
-      <a class="{% if selected_view == 'arxiv-ranked' and not selected_tag %}selected{% endif %}" href="/saved?view=arxiv-ranked">Top arXiv-ranked</a>
       <div class="tag-navigation"><strong>Tags</strong>{% for tag in tags %}<a class="{% if selected_tag == tag.name %}selected{% endif %}" href="/saved?tag={{ tag.name|urlencode }}"><span>{{ tag.name }}</span><span>{{ tag.item_count }}</span></a>{% else %}<span class="empty">No tags yet</span>{% endfor %}</div>
     </nav>
     <section class="saved-results"><header><h1>{{ title }}</h1><span>{{ items|length }} item{% if items|length != 1 %}s{% endif %}</span></header>

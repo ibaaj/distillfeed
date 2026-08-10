@@ -6,34 +6,7 @@ import pytest
 from rss_reader.db import connect, utcnow
 from rss_reader.config import load_config, save_config
 from rss_reader.opml import parse_opml_bytes
-from rss_reader.web import _present_summary_sections, _summary_body_blocks, create_app
-
-
-def test_summary_presentation_repairs_compact_markdown_without_trusting_html():
-    blocks = _summary_body_blocks(
-        "- 2608.06839 — *First Paper*: concise rationale. "
-        "- 2608.06765 — **Second Paper**: another rationale."
-    )
-    assert blocks == [{
-        "kind": "list",
-        "items": [
-            "2608.06839 — First Paper: concise rationale.",
-            "2608.06765 — Second Paper: another rationale.",
-        ],
-    }]
-    sections = _present_summary_sections([{
-        "heading": "### Theme *one*",
-        "summary": "Short, readable context.",
-        "items": [{
-            "arxiv_id": "2608.00001", "title": "**Structured title**",
-            "rationale": "Useful [paper](https://example.test). <script>alert(1)</script>",
-        }],
-    }])
-    assert sections[0]["heading"] == "Theme one"
-    assert sections[0]["blocks"][0]["text"] == "Short, readable context."
-    assert sections[0]["paper_items"][0]["title"] == "Structured title"
-    # The text remains plain data; templates escape angle brackets instead of trusting model HTML.
-    assert "<script>" in sections[0]["paper_items"][0]["rationale"]
+from rss_reader.web import create_app
 
 
 def csrf_from(response) -> str:
@@ -212,7 +185,7 @@ def test_page_and_subscription_mutations(configured, monkeypatch):
     assert b"Check feeds" in page.data
     assert b"AI relevance" in page.data
     assert b"LLM relevance" not in page.data
-    assert b'href="/?settings=ai"' in page.data
+    assert b'href="/ai"' in page.data
     assert b"Review and update summaries" not in page.data
     assert b"Update AI summaries" not in page.data
     assert b'id="scope-update-button"' not in page.data  # no group exists yet
@@ -222,8 +195,9 @@ def test_page_and_subscription_mutations(configured, monkeypatch):
     assert b'href="/saved?view=favorites"' in page.data
     assert b'href="/saved?view=read-later"' in page.data
     assert b'href="/saved?view=tags"' in page.data
-    assert b'href="/saved?view=ai-ranked"' in page.data
-    assert b'href="/saved?view=arxiv-ranked"' in page.data
+    assert b'href="/saved?view=ai-ranked"' not in page.data
+    assert b'href="/saved?view=arxiv-ranked"' not in page.data
+    assert b'>Browse all arXiv papers</a>' in page.data
     assert b"DistillFeed" in page.data
     assert b"Paris" in page.data
     assert b"Checkboxes affect LLM summaries only" not in page.data
@@ -249,7 +223,8 @@ def test_page_and_subscription_mutations(configured, monkeypatch):
     assert b'id="settings-ai-provider" class="settings-panel"' in page.data
     assert b'id="settings-arxiv" class="settings-panel"' in page.data
     assert b'<strong>Feed updates</strong>' in page.data
-    assert b'<strong>ntfy service</strong>' in page.data
+    assert b'<strong>Ntfy service</strong>' in page.data
+    assert b'<strong>ArXiv module</strong>' in page.data
     assert b'<strong>Other devices</strong>' not in page.data
     for path in (
         "llm.provider", "llm.api_key_env", "llm.base_url", "llm.model",
@@ -681,23 +656,15 @@ def test_settings_are_one_atomic_form_with_contained_responsive_sections(configu
     assert settings.count(b'id="save-settings-button"') == 1
     assert settings.count(b'id="settings-close-button"') == 1
     panel_count = settings.count(b'data-settings-panel')
-    assert panel_count == 8
+    assert panel_count == 6
     assert settings.count(b'data-settings-target=') == panel_count
     assert settings.count(b'class="settings-nav-button settings-nav-link"') == 0
-    assert b'id="settings-ai"' in settings
-    assert b'id="settings-ai-queue-list"' in settings
-    assert b'class="settings-ai-source' in settings or b"No ordinary" in settings
-    assert b'href="/ai#' not in settings
-    assert b'Detailed arXiv configuration' not in settings
-    assert b'Browse papers across all days' in settings
+    assert b'id="settings-ai"' in settings and b'href="/ai#queue"' in settings
     assert b'id="ntfy-test-button"' in settings
     assert settings.index(b'id="settings-advanced"') < settings.index(b'id="data-tools-button"')
     assert settings.count(b'data-config-path=') == len(set(re.findall(rb'data-config-path="([^"]+)"', settings)))
     assert b'data-config-path="llm.model"' in settings
     assert b'data-config-path="notifications.ntfy.topic"' in settings
-    assert b'data-config-path="plugin.arxiv_digest.arxiv.categories"' in settings
-    assert b'data-config-path="plugin.arxiv_digest.filters.negative_keywords"' in settings
-    assert b'data-config-path="plugin.arxiv_digest.llm.system_prompt"' in settings
 
 
 def test_ntfy_test_push_requires_csrf_and_returns_delivery_status(configured, monkeypatch):
@@ -1234,6 +1201,18 @@ def test_all_summaries_page_contains_active_feed_summary(configured):
     assert reader_page.status_code == 200
     assert b"Description</" not in reader_page.data
     assert b"New description" in reader_page.data
+    assert f'data-summary-item-id="{second_item_id}"'.encode() in reader_page.data
+    assert f'class="summary-locate-item" type="button" data-item-id="{second_item_id}"'.encode() in reader_page.data
+    assert b'id="summary-item-list"' in reader_page.data
+    assert b"In the same order as the item panel" in reader_page.data
+    script = app.test_client().get("/static/app.js").data
+    assert b"function syncSummaryOrder()" in script
+    assert b"syncSummaryOrder();" in script
+    assert b"itemSearch.value = ''" in script
+    assert b"itemFilter.value = 'all'" in script
+    assert b"button[data-view=\"items\"]" in script
+    assert b"row.focus({ preventScroll: true })" in script
+    assert b"row.scrollIntoView({ behavior: 'smooth', block: 'center' })" in script
     assert b"rolling view combines" not in reader_page.data
     with connect(configured.database_path) as connection:
         connection.execute("UPDATE feeds SET llm_enabled=0 WHERE id=?", (feed_id,))

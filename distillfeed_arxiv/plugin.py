@@ -22,7 +22,7 @@ from .scoring import compute_local_score, decide
 
 LOGGER = logging.getLogger(__name__)
 GROUP_TITLE = "arXiv Digest"
-PROMPT_VERSION = "distillfeed-arxiv-2"
+PROMPT_VERSION = "distillfeed-arxiv-1"
 FEED_TITLES = {
     "cs.AI": "Artificial Intelligence (cs.AI)",
     "cs.LG": "Machine Learning (cs.LG)",

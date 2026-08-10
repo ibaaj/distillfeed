@@ -12,7 +12,7 @@
   <header class="topbar page-header">
     <a class="brand" href="/">← DistillFeed</a>
     <strong class="page-title">System notices</strong>
-    <nav class="page-actions" aria-label="System notice page links"><a class="button-link" href="/?settings=notifications">ntfy service</a><a class="button-link" href="/costs">AI costs</a></nav>
+    <nav class="page-actions" aria-label="System notice page links"><a class="button-link" href="/?settings=notifications">Ntfy service</a><a class="button-link" href="/costs">AI costs</a></nav>
   </header>
   <main class="notifications-page">
     <p class="page-intro">DistillFeed’s operational notices and activity history. Outbound alerts sent to other devices through ntfy are shown separately below.</p>
@@ -47,7 +47,7 @@
 
     <section class="notification-section" id="ai-capacity">
       <h2>AI summary activity</h2>
-      <p class="page-intro">The complete waiting list, next update plan and source priorities are available inside <a href="/?settings=ai">AI summary settings</a>.</p>
+      <p class="page-intro">The complete waiting list, next update plan and source priorities are available in <a href="/ai#queue">AI summaries</a>.</p>
       {% if latest_llm and latest_llm.status == 'failed' %}
         <ul class="notification-list"><li class="notification-error"><strong>The latest AI run failed.</strong><small>{{ display_ai_error(latest_llm.error) if latest_llm.error else 'No provider detail was stored.' }}</small></li></ul>
       {% elif latest_llm and latest_llm.error %}
@@ -55,7 +55,7 @@
       {% endif %}
       <ul class="notification-list">
         {% for group in backlog %}
-          <li><a href="/?settings=ai&group={{ group.group_id }}"><strong>{{ group.group_title }}</strong></a><small>{{ group.item_count }} entr{% if group.item_count == 1 %}y is{% else %}ies are{% endif %} ready for an AI update.</small></li>
+          <li><a href="/ai?group_id={{ group.group_id }}#queue"><strong>{{ group.group_title }}</strong></a><small>{{ group.item_count }} entr{% if group.item_count == 1 %}y is{% else %}ies are{% endif %} ready for an AI update.</small></li>
         {% else %}
           <li><strong>No eligible items are currently waiting.</strong></li>
         {% endfor %}
@@ -88,7 +88,7 @@
     <section class="notification-section" id="device-alerts">
       <h2>Alerts sent to other devices with ntfy</h2>
       {% if ntfy.enabled %}<p class="page-intro">ntfy sends up to {{ ntfy.max_items_per_summary }} newly selected item{% if ntfy.max_items_per_summary != 1 %}s{% endif %} after automatic summaries. {% if ntfy_scope.mode == 'all' %}All ordinary feeds use the default {{ ntfy.minimum_relevance }}/100 threshold.{% else %}Only sources matching one of {{ ntfy_scope.rule_count }} selected group/feed rule{% if ntfy_scope.rule_count != 1 %}s{% endif %} can send; feed rules override the nearest group rule.{% endif %} Each item is claimed once for this destination.</p>
-      {% else %}<p class="page-intro">The ntfy service is off. Configure <a href="/?settings=notifications">ntfy service</a> when you want selected high-relevance entries delivered to ntfy clients.</p>{% endif %}
+      {% else %}<p class="page-intro">The Ntfy service is off. Configure <a href="/?settings=notifications">Ntfy service</a> when you want selected high-relevance entries delivered to ntfy clients.</p>{% endif %}
       <ul class="notification-list">
         {% for delivery in push_deliveries %}{% set safe_url = safe_external_url(delivery.url) %}<li class="{% if delivery.status == 'failed' %}notification-error{% endif %}">{% if safe_url %}<a href="{{ safe_url }}" target="_blank" rel="noopener noreferrer"><strong>{{ delivery.title }}</strong></a>{% else %}<strong>{{ delivery.title or 'Deleted item' }}</strong>{% endif %}<small>{{ delivery.feed_title or 'Source unavailable' }} · relevance {{ delivery.relevance }}/100 · {% if delivery.delivery_channel == 'arxiv' %}arXiv digest device rule{% else %}{{ delivery.policy_label or 'Legacy global rule' }} threshold {{ delivery.minimum_relevance if delivery.minimum_relevance is not none else ntfy.minimum_relevance }}/100{% endif %} · {{ delivery.status }} · {{ display_timestamp(delivery.delivered_at or delivery.attempted_at) }}</small>{% if delivery.error %}<small>{{ delivery.error }}</small>{% endif %}</li>
         {% else %}<li><strong>No ntfy device alert has been attempted.</strong></li>{% endfor %}

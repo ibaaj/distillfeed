@@ -235,15 +235,6 @@ def rerank(
 def daily_digest(
     papers: list[tuple[Paper, LocalScore, Decision]], cfg: dict[str, Any], language: str
 ) -> tuple[dict[str, Any], LLMUsage]:
-    paper_item = {
-        "type": "object", "additionalProperties": False,
-        "required": ["arxiv_id", "title", "rationale"],
-        "properties": {
-            "arxiv_id": {"type": "string"},
-            "title": {"type": "string"},
-            "rationale": {"type": "string"},
-        },
-    }
     schema = {
         "type": "object", "additionalProperties": False,
         "required": ["overview", "sections"],
@@ -253,12 +244,8 @@ def daily_digest(
                 "type": "array", "maxItems": 5,
                 "items": {
                     "type": "object", "additionalProperties": False,
-                    "required": ["heading", "summary", "items"],
-                    "properties": {
-                        "heading": {"type": "string"},
-                        "summary": {"type": "string"},
-                        "items": {"type": "array", "maxItems": 25, "items": paper_item},
-                    },
+                    "required": ["heading", "body"],
+                    "properties": {"heading": {"type": "string"}, "body": {"type": "string"}},
                 },
             },
         },
@@ -287,10 +274,7 @@ def daily_digest(
         f"Write a concise daily arXiv digest in {language}. Summarize the complete supplied "
         "selected, reranked papers, identify their main themes, and emphasize papers closest to the "
         "reader's machine-learning and symbolic-reasoning interests. Do not invent claims. "
-        "Use a short overview and up to five useful thematic sections. Each section has a short "
-        "plain-text summary and an items array with one concise rationale per discussed paper. "
-        "Use the supplied arXiv ID and title exactly. Do not use Markdown or HTML in any string. "
-        "Return JSON only."
+        "Use a short overview and up to five useful thematic sections. Return JSON only."
     )
     client = _client(cfg)
 

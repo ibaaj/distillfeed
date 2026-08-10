@@ -65,7 +65,7 @@ def derive_issues(connection, config: Config) -> list[dict[str, Any]]:
         issues.append(_candidate(
             f"credential:{environment}", "error", "AI credentials are missing",
             f"{environment} is not available to the server; {label} cannot run.",
-            "/?settings=ai-provider", "Review AI setup",
+            "/ai#profile", "Review AI setup",
         ))
 
     plan = ordinary.get("plan", {})
@@ -77,7 +77,7 @@ def derive_issues(connection, config: Config) -> list[dict[str, Any]]:
             "queue:deferred", "warning", "AI queue needs several updates",
             f"{ready} entries are ready; {int(plan['deferred_count'])} will remain after "
             f"the next update (about {cycles} cycles total).",
-            "/?settings=ai", "Review queue plan",
+            "/ai#overview", "Review queue plan",
         ))
     retry_count = int(connection.execute(
         "SELECT COUNT(*) FROM ai_review_queue WHERE state='retry'"

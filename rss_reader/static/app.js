@@ -384,12 +384,12 @@
       .catch(error => { setRowsReadState([row], previous); notify(error.message); });
   }));
   document.querySelectorAll('.read-button').forEach(button => button.addEventListener('click', async () => {
-    const row = button.closest('.item-row,.arxiv-paper'); const read = button.dataset.read !== '1';
+    const row = button.closest('.item-row'); const read = button.dataset.read !== '1';
     try { await api(`/api/items/${row.dataset.itemId}/read`, { method: 'POST', body: JSON.stringify({ read }) }); setRowsReadState([row], read); }
     catch (error) { notify(error.message); }
   }));
   document.querySelectorAll('.star-button').forEach(button => button.addEventListener('click', async () => {
-    const row = button.closest('.item-row,.arxiv-paper'); const starred = button.dataset.starred !== '1';
+    const row = button.closest('.item-row'); const starred = button.dataset.starred !== '1';
     try {
       await api(`/api/items/${row.dataset.itemId}/star`, { method: 'POST', body: JSON.stringify({ starred }) });
       button.dataset.starred = starred ? '1' : '0'; row.dataset.starred = starred ? '1' : '0';
@@ -401,7 +401,7 @@
     catch (error) { notify(error.message); }
   }));
   document.querySelectorAll('.read-later-button').forEach(button => button.addEventListener('click', async () => {
-    const row = button.closest('.item-row,.arxiv-paper'); const readLater = button.dataset.readLater !== '1';
+    const row = button.closest('.item-row'); const readLater = button.dataset.readLater !== '1';
     try {
       await api(`/api/items/${row.dataset.itemId}/read-later`, { method: 'POST', body: JSON.stringify({ read_later: readLater }) });
       button.dataset.readLater = readLater ? '1' : '0'; row.dataset.readLater = readLater ? '1' : '0';
@@ -1068,104 +1068,6 @@
     } finally { button.disabled = false; updateSettingsActions(); }
   }));
 
-  document.querySelectorAll('.settings-ai-source').forEach(row => {
-    const controls = [...row.querySelectorAll('[data-source-field]')];
-    const button = row.querySelector('.settings-ai-source-save');
-    if (!button) return;
-    const state = () => JSON.stringify(controls.map(control => control.value));
-    let stored = state();
-    const changed = () => { button.disabled = settingsSaving || state() === stored; };
-    controls.forEach(control => {
-      control.addEventListener('input', changed); control.addEventListener('change', changed);
-    });
-    button.addEventListener('click', async () => {
-      if (settingsDirty || settingsSaving) {
-        updateSettingsActions('Save the summary settings before changing a source.'); return;
-      }
-      button.disabled = true; const payload = {};
-      controls.forEach(control => {
-        payload[control.dataset.sourceField] = control.type === 'number'
-          ? Number(control.value) : control.value;
-      });
-      try {
-        await api(`/api/${row.dataset.sourceKind}/${row.dataset.sourceId}`, {
-          method: 'PATCH', body: JSON.stringify(payload),
-        });
-        stored = state();
-        const target = new URL(location.href); target.searchParams.set('settings', 'ai');
-        notify('Source configuration saved'); location.assign(target.toString());
-      } catch (error) { button.disabled = false; updateSettingsActions(error.message); notify(error.message); }
-    });
-  });
-
-  const settingsQueueTools = document.getElementById('settings-ai-queue-tools');
-  const settingsQueueList = document.getElementById('settings-ai-queue-list');
-  const settingsQueueSearch = document.getElementById('settings-ai-queue-search');
-  const settingsQueueState = document.getElementById('settings-ai-queue-state');
-  const settingsQueuePage = document.getElementById('settings-ai-queue-page');
-  const settingsQueuePrevious = document.getElementById('settings-ai-queue-previous');
-  const settingsQueueNext = document.getElementById('settings-ai-queue-next');
-  let settingsQueueNumber = 1;
-  function renderSettingsQueue(result) {
-    if (!settingsQueueList) return;
-    const nodes = result.items.map(item => {
-      const article = document.createElement('article'); article.dataset.itemId = item.item_id;
-      const badge = document.createElement('span'); badge.className = `queue-state queue-state-${item.display_state}`;
-      badge.textContent = String(item.display_state || '').replaceAll('_', ' ');
-      const copy = document.createElement('div'); const title = document.createElement('strong');
-      title.textContent = item.title; const detail = document.createElement('small');
-      detail.textContent = [item.group_title, item.feed_title, item.published_at || item.discovered_at].filter(Boolean).join(' · ');
-      copy.append(title, detail);
-      const action = document.createElement('button'); action.type = 'button';
-      action.className = 'settings-ai-entry-disposition';
-      action.dataset.disposition = item.display_state === 'excluded' ? 'default' : 'excluded';
-      action.textContent = item.display_state === 'excluded' ? 'Restore' : 'Exclude';
-      article.append(badge, copy, action); return article;
-    });
-    if (!nodes.length) { const empty = document.createElement('p'); empty.className = 'empty'; empty.textContent = 'No entries match this view.'; nodes.push(empty); }
-    settingsQueueList.replaceChildren(...nodes);
-    const pages = Math.max(1, Math.ceil(Number(result.total || 0) / 30));
-    settingsQueueNumber = Math.min(settingsQueueNumber, pages);
-    if (settingsQueuePage) settingsQueuePage.textContent = `Page ${settingsQueueNumber} of ${pages}`;
-    if (settingsQueuePrevious) settingsQueuePrevious.disabled = settingsQueueNumber <= 1;
-    if (settingsQueueNext) settingsQueueNext.disabled = settingsQueueNumber >= pages;
-  }
-  async function loadSettingsQueue(page = 1) {
-    if (!settingsQueueTools || !settingsQueueList) return;
-    settingsQueueNumber = Math.max(1, page);
-    const parameters = new URLSearchParams({
-      page: String(settingsQueueNumber), page_size: '30',
-      view: settingsQueueState?.value || 'ready', q: settingsQueueSearch?.value.trim() || '',
-    });
-    if (settingsQueueTools.dataset.groupId) parameters.set('group_id', settingsQueueTools.dataset.groupId);
-    if (settingsQueueTools.dataset.feedId) parameters.set('feed_id', settingsQueueTools.dataset.feedId);
-    settingsQueueList.setAttribute('aria-busy', 'true');
-    try { renderSettingsQueue(await api(`/api/ai/queue?${parameters}`)); }
-    catch (error) { updateSettingsActions(error.message); notify(error.message); }
-    finally { settingsQueueList.removeAttribute('aria-busy'); }
-  }
-  document.getElementById('settings-ai-queue-apply')?.addEventListener('click', () => loadSettingsQueue(1));
-  settingsQueueSearch?.addEventListener('keydown', event => {
-    if (event.key === 'Enter') { event.preventDefault(); loadSettingsQueue(1); }
-  });
-  settingsQueuePrevious?.addEventListener('click', () => loadSettingsQueue(settingsQueueNumber - 1));
-  settingsQueueNext?.addEventListener('click', () => loadSettingsQueue(settingsQueueNumber + 1));
-  settingsQueueList?.addEventListener('click', async event => {
-    const button = event.target.closest('.settings-ai-entry-disposition');
-    if (!button) return;
-    if (settingsDirty || settingsSaving) {
-      updateSettingsActions('Save the summary settings before changing a waiting entry.'); return;
-    }
-    const article = button.closest('[data-item-id]'); button.disabled = true;
-    try {
-      await api('/api/items/ai-disposition', { method: 'POST', body: JSON.stringify({
-        item_ids: [Number(article.dataset.itemId)], disposition: button.dataset.disposition,
-      }) });
-      notify(button.dataset.disposition === 'excluded' ? 'Entry excluded from future AI updates' : 'Entry restored');
-      await loadSettingsQueue(settingsQueueNumber);
-    } catch (error) { button.disabled = false; updateSettingsActions(error.message); notify(error.message); }
-  });
-
   function installFontControl(id, cssVariable, configPath) {
     const input = document.getElementById(id); if (!input) return;
     document.documentElement.style.setProperty(cssVariable, `${input.value}px`);
@@ -1196,6 +1098,29 @@
       group.hidden = visible === 0;
       const heading = group.querySelector('.item-day-heading');
       if (heading) heading.textContent = `${group.dataset.dayLabel} · ${visible} item${visible === 1 ? '' : 's'}`;
+    });
+  }
+  function syncSummaryOrder() {
+    const summaryList = document.getElementById('summary-item-list');
+    const itemList = document.querySelector('.item-list');
+    if (!summaryList || !itemList) return;
+    const positions = new Map(
+      [...itemList.querySelectorAll('.item-row')].map((row, index) => [row.dataset.itemId, index])
+    );
+    const entries = [...summaryList.querySelectorAll('[data-summary-item-id]')];
+    entries.sort((left, right) => {
+      const leftPosition = positions.get(left.dataset.summaryItemId);
+      const rightPosition = positions.get(right.dataset.summaryItemId);
+      return (leftPosition ?? Number.MAX_SAFE_INTEGER) - (rightPosition ?? Number.MAX_SAFE_INTEGER);
+    });
+    entries.forEach(entry => {
+      const position = positions.get(entry.dataset.summaryItemId);
+      const badge = entry.querySelector('.summary-item-position');
+      if (badge) {
+        badge.textContent = position === undefined ? 'Not in this item view' : `Item ${position + 1}`;
+        badge.setAttribute('aria-label', position === undefined ? 'Not present in the current item panel' : `Position ${position + 1} in the item panel`);
+      }
+      summaryList.appendChild(entry);
     });
   }
   function sortItems(mode) {
@@ -1229,6 +1154,7 @@
     oldGroups.forEach(existing => existing.remove());
     list.appendChild(fragment);
     updateDateGroupVisibility();
+    syncSummaryOrder();
   }
   if (itemSort) {
     const profile = document.querySelector('.item-list')?.dataset.sortProfile || 'date';
@@ -1293,10 +1219,24 @@
     }
     if (saveSelectedLater) saveSelectedLater.textContent = mode === 'read-later' ? 'Remove from Read later' : 'Add to Read later';
     updateSelectionState();
+    syncSummaryOrder();
   }
   itemSearch?.addEventListener('input', applyItemFilters);
   itemFilter?.addEventListener('change', applyItemFilters);
   applyItemFilters();
+  document.querySelectorAll('.summary-locate-item').forEach(button => button.addEventListener('click', () => {
+    const row = [...document.querySelectorAll('.item-row')].find(candidate => candidate.dataset.itemId === button.dataset.itemId);
+    if (!row) { notify('This article is not present in the current item panel.'); return; }
+    if (itemSearch) itemSearch.value = '';
+    if (itemFilter) itemFilter.value = 'all';
+    applyItemFilters();
+    document.querySelector('.mobile-tabs button[data-view="items"]')?.click();
+    document.querySelectorAll('.item-row.summary-located').forEach(candidate => candidate.classList.remove('summary-located'));
+    row.classList.add('summary-located');
+    row.focus({ preventScroll: true });
+    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    window.setTimeout(() => row.classList.remove('summary-located'), 2400);
+  }));
   document.querySelectorAll('.item-select').forEach(checkbox => checkbox.addEventListener('change', updateSelectionState));
   selectVisible?.addEventListener('change', () => {
     document.querySelectorAll('.item-row:not([hidden]) .item-select').forEach(checkbox => { checkbox.checked = selectVisible.checked; });

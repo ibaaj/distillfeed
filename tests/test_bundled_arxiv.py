@@ -471,48 +471,28 @@ def test_all_arxiv_archive_exposes_every_screening_state(configured):
                 (
                     feed_id, f"archive-{index}", f"Archive paper {index}",
                     f"https://arxiv.org/abs/2608.1000{index}", "Researcher",
-                    f"2026-08-10T0{index}:00:00+00:00", utcnow(),
-                    f"Abstract marker {index} about theorem proving",
+                    f"2026-08-10T0{index}:00:00+00:00", utcnow(), "Abstract",
                 ),
             ).lastrowid)
-            category = "cs.LO" if index == 3 else "cs.AI"
             connection.execute(
                 """INSERT INTO distillfeed_arxiv_papers(
                        item_id,arxiv_id,categories_json,primary_category,source,
-                       local_score,llm_score,decision,evaluation_status,why,local_reasons_json)
-                   VALUES(?,?,?,?, 'rss',?,?,?,?,?,?)""",
-                (
-                    item_id, f"2608.1000{index}", json.dumps([category]), category,
-                    index, llm_score, decision, evaluation_status,
-                    f"AI rationale marker {index}", json.dumps([f"Local rationale marker {index}"]),
-                ),
+                       local_score,llm_score,decision,evaluation_status)
+                   VALUES(?,?,'["cs.AI"]','cs.AI','rss',?,?,?,?)""",
+                (item_id, f"2608.1000{index}", index, llm_score, decision, evaluation_status),
             )
 
     client = create_app(str(configured.path)).test_client()
-    reader = client.get(f"/?feed={feed_id}")
-    assert b"Browse all days" in reader.data
-    assert b"All fetched papers" not in reader.data
     all_page = client.get("/arxiv")
     assert all_page.status_code == 200
-    assert b"Every fetched paper" in all_page.data
+    assert b"All fetched papers" in all_page.data
     assert b"Locally screened out" in all_page.data
-    assert all_page.data.count(b'class="arxiv-paper') == 4
-    assert b"Search all paper details" in all_page.data
-    assert b"AI score \xc2\xb7 high to low" in all_page.data
+    assert all_page.data.count(b'class="item-row saved-row"') == 4
     kept = client.get("/arxiv?status=kept")
-    assert kept.data.count(b'class="arxiv-paper') == 1
-    assert b"Kept by AI" in kept.data and b"96" in kept.data
+    assert kept.data.count(b'class="item-row saved-row"') == 1
+    assert b"AI kept" in kept.data and b"96" in kept.data
     searched = client.get("/arxiv?q=2608.10002")
-    assert searched.data.count(b'class="arxiv-paper') == 1
-    abstract_search = client.get("/arxiv?q=Abstract+marker+1")
-    assert abstract_search.data.count(b'class="arxiv-paper') == 1
-    rationale_search = client.get("/arxiv?q=Local+rationale+marker+3")
-    assert b"Archive paper 3" in rationale_search.data
-    category = client.get("/arxiv?category=cs.LO")
-    assert category.data.count(b'class="arxiv-paper') == 1
-    assert b"Archive paper 3" in category.data and b"Archive paper 2" not in category.data
-    sorted_scores = client.get("/arxiv?sort=ai-desc")
-    assert sorted_scores.data.index(b"Archive paper 2") < sorted_scores.data.index(b"Archive paper 3")
+    assert searched.data.count(b'class="item-row saved-row"') == 1
 
 
 def test_same_day_late_evidence_creates_append_only_digest_revision(configured, monkeypatch):
