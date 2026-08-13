@@ -141,7 +141,7 @@ def test_item_details_date_hierarchy_and_portable_exports(configured):
     summaries = client.get("/summaries")
     assert b"Print / PDF" in summaries.data
     assert b'aria-label="Print or save summaries as PDF"' in summaries.data
-    assert b"summary.js?v=0.23.6" in summaries.data
+    assert b"summary.js?v=0.23.7" in summaries.data
 
 
 def test_standalone_page_headers_keep_actions_compact(configured):
@@ -191,6 +191,26 @@ def test_item_panel_always_loads_stored_dates_and_caps_only_ai_relevance_per_day
     assert b'grid-template-areas: "refresh sort limit text"' in stylesheet
     assert b'grid-template-areas: "refresh refresh text" "sort limit limit"' in stylesheet
     assert b".item-view-description { max-width: none" in stylesheet
+
+
+def test_reader_restores_split_widths_before_first_paint(configured):
+    client = create_app(str(configured.path)).test_client()
+    page = client.get("/")
+    initializer = client.get("/static/layout-init.js")
+    application = client.get("/static/app.js")
+
+    early_script = b'<script src="/static/layout-init.js?v=0.23.7"></script>'
+    stylesheet = b'<link rel="stylesheet" href="/static/app.css?v=0.23.7">'
+    assert early_script in page.data
+    assert page.data.index(early_script) < page.data.index(stylesheet)
+    assert b"defer" not in early_script and b"async" not in early_script
+    assert b"localStorage.getItem(storageKey)" in initializer.data
+    assert b"Number.parseFloat" in initializer.data
+    assert b"Number.isFinite" in initializer.data
+    assert b"restoreWidth('rssLeftWidth', '--left-width', 190, 0.45)" in initializer.data
+    assert b"restoreWidth('rssMiddleWidth', '--middle-width', 300, 0.65)" in initializer.data
+    assert b"const savedLeftWidth" not in application.data
+    assert b"const savedMiddleWidth" not in application.data
 
 
 def test_top_ai_ranked_is_a_global_page_and_not_a_saved_collection(configured):
@@ -737,7 +757,7 @@ def test_mobile_layers_narrow_pane_controls_and_favicon_are_bounded(configured):
     assert b'class="nav-menu main-menu"' in page.data
     assert b'<span class="toolbar-label">Menu</span>' in page.data
     assert b'class="action-menu scope-actions"' in page.data
-    favicon = b'<link rel="icon" type="image/svg+xml" href="/static/distillfeed-icon.svg?v=0.23.6">'
+    favicon = b'<link rel="icon" type="image/svg+xml" href="/static/distillfeed-icon.svg?v=0.23.7">'
     for path in ("/", "/summaries", "/history", "/health", "/notifications", "/costs", "/saved?view=favorites"):
         response = client.get(path)
         assert response.status_code == 200
@@ -813,7 +833,8 @@ def test_settings_contain_ai_source_and_queue_transitions_without_external_subme
 
 def test_service_worker_revalidates_shell_and_never_caches_api(configured):
     worker = create_app(str(configured.path)).test_client().get("/static/service-worker.js").data
-    assert b"distillfeed-v20" in worker
+    assert b"distillfeed-v21" in worker
+    assert b"/static/layout-init.js?v=0.23.7" in worker
     assert b"url.pathname.startsWith('/api/')" in worker
     assert b"fetch(event.request, { cache: 'no-cache' })" in worker
     assert b"caches.match(event.request).then(cached => cached || fetch(event.request))" not in worker

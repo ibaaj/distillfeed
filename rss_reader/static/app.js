@@ -67,11 +67,6 @@
     dialog.showModal();
   }
 
-  const savedLeftWidth = localStorage.getItem('rssLeftWidth');
-  const savedMiddleWidth = localStorage.getItem('rssMiddleWidth');
-  if (savedLeftWidth) document.documentElement.style.setProperty('--left-width', `${savedLeftWidth}px`);
-  if (savedMiddleWidth) document.documentElement.style.setProperty('--middle-width', `${savedMiddleWidth}px`);
-
   function refreshSavedListState() {
     const list = document.querySelector('.saved-list'); if (!list) return;
     const count = list.querySelectorAll('.saved-row').length;

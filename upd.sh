@@ -8,7 +8,7 @@ fi
 set -Eeuo pipefail
 umask 077
 
-EXPECTED_VERSION="0.23.6"
+EXPECTED_VERSION="0.23.7"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 DEFAULT_ARCHIVE="$SCRIPT_DIR/distillfeed-$EXPECTED_VERSION.tar.gz"
 
@@ -1621,6 +1621,38 @@ print("Install receipt:", document["source_sha256"])
 PY
 DISTILLFEED_INSTALL_LOCKED=1 "$INSTALL_DIR/install.sh" --check \
     || fail "the updated source/install receipt failed launch.sh's installation check"
+
+# The receipt check imports the installed distribution. Reassert the final
+# metadata invariant afterwards so no legacy installer or environment hook can
+# leave a second DistillFeed distribution record behind.
+clean_distillfeed_metadata "$EXPECTED_VERSION"
+(
+    cd /
+    "$PYTHON" - "$EXPECTED_VERSION" <<'PY'
+import importlib.metadata
+import sys
+import sysconfig
+from pathlib import Path
+
+expected = sys.argv[1]
+roots = {
+    Path(value).resolve()
+    for key in ("purelib", "platlib")
+    if (value := sysconfig.get_path(key))
+}
+versions = sorted({
+    distribution.version
+    for root in roots
+    for distribution in importlib.metadata.distributions(path=[str(root)])
+    if str(distribution.metadata.get("Name") or "").casefold() == "distillfeed"
+})
+if versions != [expected]:
+    raise SystemExit(
+        "Final installed metadata mismatch: " + (", ".join(versions) or "none")
+    )
+print("Final installed metadata versions:", ", ".join(versions))
+PY
+)
 
 python3 - "$DATA_STATE" "$CONFIG_PATH" <<'PY'
 import hashlib

@@ -8,7 +8,7 @@ fi
 set -Eeuo pipefail
 umask 077
 
-EXPECTED_VERSION="0.23.6"
+EXPECTED_VERSION="0.23.7"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 ARCHIVE="$SCRIPT_DIR/distillfeed-update-$EXPECTED_VERSION.zip"
 BRANCH="main"

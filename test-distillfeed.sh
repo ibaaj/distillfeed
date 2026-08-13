@@ -11,7 +11,7 @@ set -Eeuo pipefail
 # AI calls are separate, explicit opt-ins; the default run only uses mocked
 # network responses from the test suite and loopback HTTP health requests.
 
-EXPECTED_VERSION="0.23.6"
+EXPECTED_VERSION="0.23.7"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 ARCHIVE="${ARCHIVE:-$SCRIPT_DIR/distillfeed-$EXPECTED_VERSION.tar.gz}"
 TEST_TMPDIR="${TEST_TMPDIR:-${TMPDIR:-/tmp}}"
@@ -205,6 +205,7 @@ required_files = {
     "distillfeed/rss_reader/setup_web.py",
     "distillfeed/rss_reader/resources/starter-subscriptions.opml",
     "distillfeed/rss_reader/static/app.js",
+    "distillfeed/rss_reader/static/layout-init.js",
     "distillfeed/rss_reader/static/ai.js",
     "distillfeed/rss_reader/static/summary.js",
     "distillfeed/rss_reader/static/setup.css",
