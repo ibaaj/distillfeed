@@ -1,5 +1,13 @@
-const CACHE = 'distillfeed-v21';
-const SHELL = ['/static/layout-init.js?v=0.23.7', '/static/app.css?v=0.23.7', '/static/app.js?v=0.23.7', '/static/manifest.webmanifest', '/static/distillfeed-icon.svg?v=0.23.7'];
+const CACHE = 'distillfeed-v241-final';
+const SHELL = [
+  '/static/layout-init.js?v=0.24.1-final',
+  '/static/app.css?v=0.24.1-final',
+  '/static/review-state.js?v=0.24.1-final',
+  '/static/review.js?v=0.24.1-final',
+  '/static/app.js?v=0.24.1-final',
+  '/static/manifest.webmanifest',
+  '/static/distillfeed-icon.svg?v=0.24.1-final',
+];
 
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)));

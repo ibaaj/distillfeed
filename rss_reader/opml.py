@@ -40,6 +40,7 @@ class GroupOutline:
     summary_interval_hours: int | None = None
     summary_item_budget: int | None = None
     ai_mode: str | None = None
+    review_display_mode: str | None = None
 
 
 def _attr(element: ET.Element, name: str) -> str | None:
@@ -109,6 +110,11 @@ def parse_opml_bytes(content: bytes) -> list[GroupOutline]:
             group_mode = group_mode.casefold()
             if group_mode not in {"automatic", "manual", "off"}:
                 raise ValueError("An OPML group AI mode is invalid")
+        review_display_mode = _attr(node, "distillfeedReviewDisplayMode")
+        if review_display_mode is not None:
+            review_display_mode = review_display_mode.casefold()
+            if review_display_mode not in {"daily", "direct"}:
+                raise ValueError("An OPML review display mode is invalid")
         try:
             interval = int(_attr(node, "distillfeedSummaryIntervalHours")) if _attr(node, "distillfeedSummaryIntervalHours") is not None else None
             budget = int(_attr(node, "distillfeedSummaryItemBudget")) if _attr(node, "distillfeedSummaryItemBudget") is not None else None
@@ -121,7 +127,7 @@ def parse_opml_bytes(content: bytes) -> list[GroupOutline]:
         group = GroupOutline(
             title, llm_enabled=llm_enabled, position=position, ai_priority=priority,
             summary_interval_hours=interval, summary_item_budget=budget,
-            ai_mode=group_mode,
+            ai_mode=group_mode, review_display_mode=review_display_mode,
         )
         (destination.groups if destination else top_groups).append(group)
         child_position = 0
@@ -162,7 +168,8 @@ def import_groups(connection, groups: Iterable[GroupOutline]) -> tuple[int, int]
                    ai_mode = CASE WHEN ? IS NULL THEN ai_mode ELSE ? END,
                    ai_priority = CASE WHEN ? IS NULL THEN ai_priority ELSE ? END,
                    summary_interval_hours = CASE WHEN ? IS NULL THEN summary_interval_hours ELSE ? END,
-                   summary_item_budget = CASE WHEN ? IS NULL THEN summary_item_budget ELSE ? END
+                   summary_item_budget = CASE WHEN ? IS NULL THEN summary_item_budget ELSE ? END,
+                   review_display_mode = CASE WHEN ? IS NULL THEN review_display_mode ELSE ? END
                    WHERE id = ?""",
                 (
                     position, group.llm_enabled,
@@ -170,7 +177,8 @@ def import_groups(connection, groups: Iterable[GroupOutline]) -> tuple[int, int]
                     group.ai_mode, group.ai_mode,
                     group.ai_priority, group.ai_priority,
                     group.summary_interval_hours, group.summary_interval_hours,
-                    group.summary_item_budget, group.summary_item_budget, group_id,
+                    group.summary_item_budget, group.summary_item_budget,
+                    group.review_display_mode, group.review_display_mode, group_id,
                 ),
             )
         else:
@@ -178,8 +186,8 @@ def import_groups(connection, groups: Iterable[GroupOutline]) -> tuple[int, int]
                 connection.execute(
                     """INSERT INTO groups(
                            parent_id,title,position,llm_enabled,ai_mode,ai_priority,
-                           summary_interval_hours,summary_item_budget,created_at
-                       ) VALUES (?,?,?,?,?,?,?,?,?)""",
+                           summary_interval_hours,summary_item_budget,review_display_mode,created_at
+                       ) VALUES (?,?,?,?,?,?,?,?,?,?)""",
                     (
                         parent_id, group.title, position,
                         int(group.llm_enabled if group.llm_enabled is not None else True),
@@ -187,7 +195,7 @@ def import_groups(connection, groups: Iterable[GroupOutline]) -> tuple[int, int]
                             group.ai_priority if group.ai_priority in {"manual", "off"} else "automatic"
                         ),
                         group.ai_priority or "normal", group.summary_interval_hours or 0,
-                        group.summary_item_budget or 0, utcnow(),
+                        group.summary_item_budget or 0, group.review_display_mode or "daily", utcnow(),
                     ),
                 ).lastrowid
             )
@@ -260,6 +268,8 @@ def build_tree_from_database(connection) -> list[GroupOutline]:
             else int(row["summary_item_budget"]),
             ai_mode=None if row["parent_id"] is None and row["title"] == "Ungrouped"
             else str(row["ai_mode"]),
+            review_display_mode=None if row["parent_id"] is None and row["title"] == "Ungrouped"
+            else str(row["review_display_mode"]),
         )
         for row in rows
     }
@@ -328,6 +338,7 @@ def serialize_opml(groups: Iterable[GroupOutline]) -> bytes:
                 ),
                 "distillfeedSummaryIntervalHours": str(max(0, int(group.summary_interval_hours or 0))),
                 "distillfeedSummaryItemBudget": str(max(0, int(group.summary_item_budget or 0))),
+                "distillfeedReviewDisplayMode": group.review_display_mode or "daily",
             },
         )
         for entry in ordered(group):

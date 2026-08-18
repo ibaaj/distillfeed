@@ -13,14 +13,16 @@
   <meta name="completion-notifications" content="{{ 'true' if ui.completion_notifications else 'false' }}">
   <meta name="selected-group-id" content="{{ selected_group_id or '' }}">
   <meta name="selected-feed-id" content="{{ selected_feed_id or '' }}">
+  <meta name="review-preference-group-id" content="{{ review_preference_group_id or '' }}">
+  <meta name="review-display-mode" content="{{ review_display_mode or 'daily' }}">
   <meta name="arxiv-digest-scope" content="{{ 'true' if is_arxiv_scope else 'false' }}">
   <meta name="item-sort-profile" content="{{ item_sort_profile or 'date' }}">
-  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='distillfeed-icon.svg', v='0.23.7') }}">
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='distillfeed-icon.svg', v='0.24.1-final') }}">
   <link rel="manifest" href="{{ url_for('static', filename='manifest.webmanifest') }}">
   <meta name="theme-color" content="#315f9c">
   <title>DistillFeed</title>
-  <script src="{{ url_for('static', filename='layout-init.js', v='0.23.7') }}"></script>
-  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='0.23.7') }}">
+  <script src="{{ url_for('static', filename='layout-init.js', v='0.24.1-final') }}"></script>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='0.24.1-final') }}">
 </head>
 {% set reader_notices = system_notices|default([], true) %}
 <body class="reader-page{% if ui.dark_mode %} dark-mode{% endif %}">
@@ -114,11 +116,6 @@
     <progress id="job-progress-bar" aria-label="Update progress"></progress>
   </div>
 
-  <nav class="mobile-tabs mobile-only" aria-label="Reader views">
-    <button data-view="items" class="active">Items</button>
-    <button data-view="summary">Summary</button>
-  </nav>
-
   <main class="layout" id="layout">
     <aside class="subscriptions" id="subscriptions">
       <div class="pane-heading">
@@ -136,99 +133,53 @@
     </aside>
     <div class="pane-resizer" data-resizer="left" role="separator" aria-label="Resize subscriptions pane"></div>
 
-    <section class="items-pane view-active" data-pane="items">
-      <div class="pane-heading">
-        <span><span id="items-scope-title">{% if scope_title %}{{ scope_title }}{% else %}Items{% endif %}</span> <span class="muted">({{ scope_item_count }} stored)</span></span>
-        <span class="item-controls">
-          <span class="item-control-actions">
-            {% if selected_feed_id or selected_group_id %}<button id="scope-refresh-button" class="summary-scope-action secondary-action item-refresh-control" aria-label="{% if is_arxiv_scope %}Check configured arXiv categories{% else %}Check RSS and Atom feeds in {{ scope_title }}{% endif %}" {% if 'summary-update' in locks or 'feed-refresh' in locks or 'llm-summary' in locks %}disabled{% endif %}><span aria-hidden="true">↻</span><span>{% if is_arxiv_scope %}Check arXiv{% else %}Check feeds{% endif %}</span></button>{% endif %}
-            <label class="item-control-field item-sort-control"><span>Sort</span><select id="item-sort"><option value="date">Date</option><option value="relevance">AI relevance</option></select></label>
-            <label id="relevance-per-day-control" hidden class="item-control-field item-limit-control"><span>AI results per day</span><select id="relevance-per-day-limit"><option value="10">Top 10</option><option value="25">Top 25</option><option value="50">Top 50</option><option value="all">All ranked articles</option></select></label>
-            <label class="item-text-control"><span>Text</span><input id="font-size" type="range" min="10" max="24" value="{{ ui.item_font_size }}"></label>
-          </span>
-          <span id="item-view-description" class="item-view-description muted" role="status" aria-live="polite">All articles for every stored day</span>
-        </span>
-      </div>
-      <div class="item-filterbar">
-        <input id="item-search" type="search" placeholder="Search visible items" aria-label="Search visible items">
-        <select id="item-filter" aria-label="Filter items"><option value="all">All</option><option value="unread">Unread</option><option value="starred">Starred</option><option value="read-later">Read later</option></select>
-        <div class="item-filter-actions"><label class="select-visible"><input id="select-visible-items" type="checkbox"> Select shown</label>
-        <details id="selected-actions" class="action-menu disabled"><summary>Selected <span id="selected-count"></span></summary><div>
-          <button id="mark-selected-read" disabled>Mark as read</button>
-          <button id="mark-selected-unread" disabled>Mark as unread</button>
-          <button id="save-selected-later" disabled>Add to Read later</button>
-          <button id="favorite-selected" disabled>Add to Favorites</button>
-          <button id="tag-selected" disabled>Assign tags…</button>
-        </div></details>
-        <details class="action-menu scope-actions"><summary>More</summary><div><button id="mark-scope-read">Mark every item in {{ scope_title or 'this selection' }} as read</button><button id="mark-scope-unread">Mark every item in {{ scope_title or 'this selection' }} as unread</button></div></details>
-        <span id="visible-count" class="muted"></span></div>
-      </div>
-      <div class="item-list" data-sort-profile="{{ item_sort_profile or 'date' }}">
-        {% for item in items %}
-          {% set item_relevance = item.display_relevance if item.display_relevance is defined else item.relevance %}
-          <article class="item-row{% if item.plugin_html is defined %} plugin-item{% endif %}{% if item.is_read %} read{% endif %}" tabindex="0" data-item-id="{{ item.id }}" data-feed-id="{{ item.feed_id }}" data-read="{{ 1 if item.is_read else 0 }}" data-starred="{{ 1 if item.is_starred else 0 }}" data-read-later="{{ 1 if item.is_read_later else 0 }}" data-tags="{{ item.tags }}" data-relevance="{{ item_relevance if item_relevance is not none else -1 }}" data-date="{{ item.published_at or item.discovered_at }}">
-            <input class="item-select" type="checkbox" aria-label="Select {{ item.title }}">
-            <button class="star-button{% if item.is_starred %} starred{% endif %}" aria-label="{{ 'Remove favorite' if item.is_starred else 'Add favorite' }}" data-starred="{{ 1 if item.is_starred else 0 }}">★</button>
-            {% if item.plugin_html is defined %}
-            <div class="plugin-item-content">{{ item.plugin_html|safe }}</div>
-            <button class="read-button" data-read="{{ 1 if item.is_read else 0 }}" aria-label="{{ 'Mark as unread' if item.is_read else 'Mark as read' }}">{{ '○' if item.is_read else '●' }}</button>
-            {% else %}
-            <button class="item-details-toggle" type="button" aria-expanded="false" aria-controls="item-details-{{ item.id }}" aria-label="Show details for {{ item.title }}"><span aria-hidden="true">›</span></button>
-            <a class="item-feed item-feed-link" href="/?feed={{ item.feed_id }}">{{ item.feed_title }}</a>
-            {% set safe_url = safe_external_url(item.url) %}{% if safe_url %}<a class="item-title" href="{{ safe_url }}" target="_blank" rel="noopener noreferrer">{{ item.title }}</a>{% else %}<span class="item-title">{{ item.title }}</span>{% endif %}
-            {% if item.relevance is not none %}<span class="relevance" aria-label="AI relevance {{ item.relevance }}{% if item.relevance_justification %}. {{ item.relevance_justification }}{% endif %}">{{ item.relevance }}</span>
-            {% elif not item.ai_active %}<span class="ranking-status" aria-label="Source excluded from AI summaries">Paused</span>
-            {% elif item.summary_eligible %}<span class="ranking-status" aria-label="Eligible and waiting for a successful AI evaluation">Pending</span>
-            {% else %}<span class="ranking-status" aria-label="Historical item outside the current AI eligibility window">Historical</span>{% endif %}
-            <button class="read-button" data-read="{{ 1 if item.is_read else 0 }}" aria-label="{{ 'Mark as unread' if item.is_read else 'Mark as read' }}">{{ '○' if item.is_read else '●' }}</button>
-            <div class="item-details" id="item-details-{{ item.id }}" hidden>
-              <dl>
-                <div><dt>Date</dt><dd><time class="item-detail-date" datetime="{{ item.published_at or item.discovered_at }}">{{ item.published_at or item.discovered_at }}</time></dd></div>
-                <div><dt>URL</dt><dd>{% if safe_url %}<a href="{{ safe_url }}" target="_blank" rel="noopener noreferrer">{{ safe_url }}</a>{% else %}<span class="muted">Unavailable</span>{% endif %}</dd></div>
-                <div><dt>Title</dt><dd>{{ item.title }}</dd></div>
-                {% if item.description_text %}<div><dt>Description</dt><dd class="item-detail-description">{{ item.description_text }}</dd></div>{% endif %}
-              </dl>
-            </div>
-            {% endif %}
-          </article>
-        {% else %}<p class="empty">No items in this selection yet.</p>{% endfor %}
-      </div>
-    </section>
-    <div class="pane-resizer" data-resizer="middle" role="separator" aria-label="Resize items pane"></div>
-
-    <section class="summary-pane" data-pane="summary">
-      <div class="pane-heading summary-pane-heading">
-        <span class="summary-pane-title">Summary<span id="summary-scope-title">{% if scope_title %} · {{ scope_title }}{% endif %}</span></span>
-        <span class="summary-heading-tools">
+    <section id="review-app" class="review-pane" data-default-min-ai="{{ summary_minimum_relevance }}">
+      <header class="review-heading">
+        <span class="review-heading-title"><strong id="items-scope-title">{{ scope_title or 'Choose a subscription' }}</strong><span>{{ scope_item_count }} stored item{% if scope_item_count != 1 %}s{% endif %}</span></span>
+        <span class="review-heading-actions">
           {% if selected_feed_id or selected_group_id %}
-            <button id="scope-update-button" class="summary-scope-action primary-action" data-ai-off="{{ 'true' if scope_ai_mode == 'off' else 'false' }}" aria-label="{% if is_arxiv_scope %}Update the daily arXiv digest{% elif scope_ai_mode == 'off' %}Enable AI for {{ scope_title }}{% else %}Update the summary for {{ scope_title }}{% endif %}" {% if 'summary-update' in locks or 'feed-refresh' in locks or 'llm-summary' in locks %}disabled{% endif %}><span aria-hidden="true">✦</span><span>{% if is_arxiv_scope %}Update daily digest{% elif scope_ai_mode == 'off' %}Enable AI{% else %}Update this summary{% endif %}</span></button>
+            <label class="review-layout-control" title="Saved for this OPML group and inherited by its feeds. Show items directly opens each day and loads its item list as it approaches the viewport."><span>Day view</span><select id="review-display-mode" aria-label="Default day view for this group"><option value="daily" {% if review_display_mode == 'daily' %}selected{% endif %}>Open one day</option><option value="direct" {% if review_display_mode == 'direct' %}selected{% endif %}>Show items directly</option></select></label>
+            <button id="scope-refresh-button" class="summary-scope-action secondary-action" aria-label="{% if is_arxiv_scope %}Check configured arXiv categories{% else %}Check RSS and Atom feeds in {{ scope_title }}{% endif %}" {% if 'summary-update' in locks or 'feed-refresh' in locks or 'llm-summary' in locks %}disabled{% endif %}><span aria-hidden="true">↻</span><span>{% if is_arxiv_scope %}Check arXiv{% else %}Check feeds{% endif %}</span></button>
+            <button id="scope-update-button" class="summary-scope-action primary-action" data-ai-off="{{ 'true' if scope_ai_mode == 'off' else 'false' }}" aria-label="{% if is_arxiv_scope %}Check arXiv and process every remaining daily update{% elif scope_ai_mode == 'off' %}Enable AI for {{ scope_title }}{% else %}Update the summary for {{ scope_title }}{% endif %}" {% if 'summary-update' in locks or 'feed-refresh' in locks or 'llm-summary' in locks %}disabled{% endif %}><span aria-hidden="true">✦</span><span>{% if is_arxiv_scope %}Update remaining arXiv{% elif scope_ai_mode == 'off' %}Enable AI{% else %}Update summaries{% endif %}</span></button>
             {% if not is_arxiv_scope %}<details id="summary-ai-config" class="summary-ai-config action-menu" data-source-kind="{{ 'feeds' if selected_feed_id else 'groups' }}" data-source-id="{{ selected_feed_id or selected_group_id }}"><summary aria-label="Configure AI for {{ scope_title }}">AI configuration</summary><div>
               <label><span>Use AI</span><select data-summary-source-field="ai_mode">{% if selected_feed_id %}<option value="inherit" {% if scope_ai_own_mode == 'inherit' %}selected{% endif %}>Follow group</option>{% endif %}<option value="automatic" {% if scope_ai_own_mode == 'automatic' %}selected{% endif %}>Automatic</option><option value="manual" {% if scope_ai_own_mode == 'manual' %}selected{% endif %}>Only on request</option><option value="off" {% if scope_ai_own_mode == 'off' %}selected{% endif %}>Never use AI</option></select></label>
               {% if not selected_feed_id %}<label><span>Priority in global updates</span><select data-summary-source-field="ai_priority"><option value="high" {% if scope_ai_priority == 'high' %}selected{% endif %}>High</option><option value="normal" {% if scope_ai_priority == 'normal' %}selected{% endif %}>Normal</option><option value="low" {% if scope_ai_priority == 'low' %}selected{% endif %}>Low</option></select></label><label><span>Automatic interval</span><select data-summary-source-field="summary_interval_hours"><option value="0" {% if scope_summary_interval_hours == 0 %}selected{% endif %}>Every scheduled update</option><option value="1" {% if scope_summary_interval_hours == 1 %}selected{% endif %}>At most hourly</option><option value="6" {% if scope_summary_interval_hours == 6 %}selected{% endif %}>At most every 6 hours</option><option value="12" {% if scope_summary_interval_hours == 12 %}selected{% endif %}>At most every 12 hours</option><option value="24" {% if scope_summary_interval_hours == 24 %}selected{% endif %}>At most daily</option><option value="168" {% if scope_summary_interval_hours == 168 %}selected{% endif %}>At most weekly</option></select></label><label><span>Maximum entries per update</span><input data-summary-source-field="summary_item_budget" type="number" min="0" max="1000" value="{{ scope_summary_item_budget }}"><small>0 lets the global workload decide.</small></label>{% else %}<p>This feed uses its group’s priority and schedule.</p>{% endif %}
-              <p>Each entry is evaluated once. This summary displays entries scoring at least {{ summary_minimum_relevance }}/100 from the last {{ summary_evidence_hours }} hours.</p><button id="summary-ai-config-save" type="button">Save AI configuration</button>
+              <button id="summary-ai-config-save" type="button">Save AI configuration</button>
             </div></details>{% endif %}
           {% endif %}
-          {% if summary %}<span class="muted summary-updated-at" aria-label="Last updated {{ display_timestamp(summary.completed_at) }}">{{ display_timestamp(summary.completed_at) }}</span>{% endif %}
-          <label class="summary-text-size">Text <input id="summary-font-size" type="range" min="10" max="24" value="{{ ui.summary_font_size }}"></label><button id="summary-help-button" class="summary-help-button" type="button" aria-label="How this summary is updated" aria-haspopup="dialog">?</button>
+          <label class="summary-text-size">Text <input id="summary-font-size" type="range" min="10" max="24" value="{{ ui.summary_font_size }}"></label>
+          <button id="summary-help-button" class="summary-help-button" type="button" aria-label="How the review stream is updated" aria-haspopup="dialog">?</button>
         </span>
+      </header>
+
+      {% if scope_arxiv_error %}<div class="scope-status scope-status-error"><strong>arXiv AI update failed.</strong> {{ scope_arxiv_error }} Remaining work is preserved for retry. <button id="scope-update-inline" type="button">Retry remaining arXiv</button></div>
+      {% elif summary_stale and is_arxiv_scope %}<div class="scope-status"><strong>arXiv work is waiting.</strong> {% if scope_pending_items %}{{ scope_pending_items }} locally eligible paper{% if scope_pending_items != 1 %}s{% endif %} still need{% if scope_pending_items == 1 %}s{% endif %} AI scoring. {% endif %}{% if scope_missing_daily_digests %}{{ scope_missing_daily_digests }} historical day{% if scope_missing_daily_digests != 1 %}s{% endif %} need{% if scope_missing_daily_digests == 1 %}s{% endif %} a dedicated daily brief. {% endif %}<button id="scope-update-inline" type="button">Update remaining arXiv</button></div>
+      {% elif scope_ai_mode == 'off' %}<div class="scope-status"><strong>AI is off for this source.</strong> Stored source text remains available. <button id="scope-enable-ai" type="button">Enable AI</button></div>{% endif %}
+
+      <div class="review-toolbar" role="search" aria-label="Review filters">
+        <label><span>View</span><select id="review-preset"><option value="best-unread">Best unread</option><option value="catch-up">Catch up</option><option value="today">Today</option><option value="awaiting-ai">Awaiting AI</option><option value="starred">Starred</option><option value="everything">Everything</option><option value="custom">Custom</option></select></label>
+        <label class="review-toolbar-search"><span>Search</span><input id="review-search" type="search" maxlength="200" placeholder="Title, author, summary, rationale or tag"></label>
+        <label><span>Minimum AI</span><select id="review-min-ai"><option value="0">Any score</option><option value="50">50+</option><option value="60">60+</option><option value="70">70+</option><option value="80">80+</option><option value="90">90+</option><option value="95">95+</option></select></label>
+        <label><span>Sort</span><select id="review-sort"><option value="ai">AI relevance</option><option value="date">Newest first</option><option value="local">Local score</option></select></label>
+        <label><span>Per day</span><select id="review-page-size"><option value="10">10 items</option><option value="25">25 items</option><option value="50">50 items</option></select></label>
+        <details id="review-advanced"><summary>Advanced</summary><div class="review-advanced-panel">
+          <label><span>Read state</span><select id="review-read"><option value="all">All</option><option value="unread">Unread</option><option value="read">Read</option></select></label>
+          <label><span>Saved state</span><select id="review-saved"><option value="all">All</option><option value="starred">Starred</option><option value="read-later">Read later</option></select></label>
+          <label><span>AI state</span><select id="review-ai-state"><option value="all">All</option><option value="scored">AI scored</option><option value="pending">Awaiting AI</option><option value="not-sent">Not sent to AI</option></select></label>
+          <label><span>AI decision</span><select id="review-decision"><option value="all">All</option><option value="keep">Kept</option><option value="drop">Dropped</option></select></label>
+          <label><span>Source</span><select id="review-source"><option value="0">All sources</option></select></label>
+          <span class="review-date-range"><label><span>From</span><input id="review-from" type="date"></label><label><span>To</span><input id="review-to" type="date"></label></span>
+          <button id="review-reset" class="review-reset" type="button">Reset filters</button>
+        </div></details>
       </div>
-      <div class="summary-content">
-        {% if scope_arxiv_error %}<div class="scope-status scope-status-error"><strong>arXiv AI update failed.</strong> {{ scope_arxiv_error }} The shortlisted papers remain ready. <button id="scope-update-inline" type="button">Retry daily digest</button></div>{% elif scope_ai_mode == 'off' %}<div class="scope-status"><strong>AI is off for this source.</strong> Its stored summary remains readable. <button id="scope-enable-ai" type="button">Enable AI</button></div>{% elif summary_stale %}<div class="scope-status"><strong>{% if is_arxiv_scope %}A new arXiv announcement is waiting.{% else %}This summary has an update available.{% endif %}</strong> {% if is_arxiv_scope %}{{ scope_pending_items }} locally shortlisted paper{% if scope_pending_items != 1 %}s are{% else %} is{% endif %} ready for the one daily digest. <button id="scope-update-inline" type="button">Update daily digest</button>{% else %}{{ scope_pending_items }} feed entr{% if scope_pending_items == 1 %}y is{% else %}ies are{% endif %} waiting for evaluation. This summary displays scores of at least {{ summary_minimum_relevance }}/100 from the last {{ summary_evidence_hours }} hours. <button id="scope-update-inline" type="button">Update this summary</button>{% endif %}</div>{% elif scope_pending_items and not is_arxiv_scope %}<div class="scope-status"><strong>{{ scope_pending_items }} feed entr{% if scope_pending_items == 1 %}y is{% else %}ies are{% endif %} waiting for evaluation.</strong> This summary displays scores of at least {{ summary_minimum_relevance }}/100 from the last {{ summary_evidence_hours }} hours. <a href="/?settings=ai">Review waiting entries</a>.</div>{% endif %}
-        {% if summary %}
-          <div class="story-clusters"><section class="story-cluster summary-ordered-cluster"><h2>Articles</h2><ul id="summary-item-list">
-            {% for item in summary_items %}{% set safe_url = safe_external_url(item.url) %}<li data-summary-item-id="{{ item.item_id }}" data-summary-score="{{ item.importance if item.importance is not none else -1 }}"><div class="summary-item-context"><span class="summary-topic">{{ item.story_cluster or item.title }}</span><button class="summary-locate-item" type="button" data-item-id="{{ item.item_id }}">Show in item panel</button></div><h3>{% if safe_url %}<a href="{{ safe_url }}" target="_blank" rel="noopener noreferrer">{{ item.title }}</a>{% else %}{{ item.title }}{% endif %}</h3><div class="summary-feed"><span class="summary-group-name" data-group-id="{{ item.group_id }}">{{ item.group_title }}</span> · <span class="summary-feed-name" data-feed-id="{{ item.feed_id }}">{{ item.feed_title }}</span> · {{ item.importance }}/100</div><div class="summary-markdown">{{ item.description|summary_markup }}</div>{% if item.justification %}<div class="justification"><strong>Why relevant:</strong><div class="summary-markdown">{{ item.justification|summary_markup }}</div></div>{% endif %}</li>{% endfor %}
-          </ul></section></div>
-          {% for digest in summary_overviews %}{% if digest.changes %}<div class="summary-changes"><strong>{% if summary_overviews|length > 1 %}{{ digest.group_title }} · {% endif %}New since the previous summary:</strong><div class="summary-markdown">{{ digest.changes|summary_markup }}</div></div>{% endif %}{% endfor %}
-          {% if summary_sections %}<div class="digest-sections"><h2 class="digest-sections-title">Thematic overview</h2>{% for section in summary_sections %}<section><h3>{% if summary_overviews|length > 1 %}{{ section.group_title }} · {% endif %}{{ section.heading }}</h3><div class="summary-markdown">{{ section.body|summary_markup }}</div></section>{% endfor %}</div>{% endif %}
-          <div class="cost-line">{{ summary.model }} · {{ summary.input_tokens }} input · {{ summary.output_tokens }} output · whole-request estimate ${{ '%.6f'|format(summary.estimated_cost_usd) }}{% if merged_summary_count > 1 %} · rolling view combines {{ merged_summary_count }} recent summaries{% endif %}{% if summary.deferred_items %} · {{ summary.deferred_items }} deferred{% endif %}</div>
-        {% else %}<div class="summary-empty-state"><strong>{% if is_arxiv_scope %}No daily arXiv digest exists yet.{% else %}No AI summary exists for this selection yet.{% endif %}</strong><p>{% if is_arxiv_scope %}<strong>Update daily digest</strong> checks every configured arXiv category, locally screens new papers, and uses the specialist ranking recipe once for a new announcement day.{% else %}<strong>Update this summary</strong> checks its RSS and Atom feeds, evaluates eligible feed entries, and publishes one summary for this exact selection.{% endif %}</p><a href="/?settings={{ 'arxiv' if is_arxiv_scope else 'ai' }}">Open {% if is_arxiv_scope %}ArXiv module{% else %}AI summary{% endif %} settings</a>{% if is_arxiv_scope %}<a href="/arxiv">Browse configured-category papers</a>{% endif %}</div>{% endif %}
-      </div>
+      <div class="review-feedback"><div id="review-active-filters" class="review-active-filters" hidden></div><span id="review-result-status" class="review-result-status" role="status" aria-live="polite">Loading…</span></div>
+      <div id="review-day-list" class="review-day-list"><div class="review-loading review-loading-page">Loading the review stream…</div></div>
     </section>
   </main>
 
   <div id="toast" role="status" aria-live="polite"></div>
 
-  <dialog id="summary-help-dialog" class="summary-help-dialog" aria-labelledby="summary-help-title"><div class="summary-help-card"><header><h2 id="summary-help-title">{% if is_arxiv_scope %}How the daily arXiv digest works{% else %}How this summary is updated{% endif %}</h2><button id="summary-help-close" type="button" aria-label="Close help">×</button></header>{% if is_arxiv_scope %}<p><strong>Check arXiv</strong> reads every configured category and locally screens unseen papers. It does not call the ranking model.</p><p><strong>Update daily digest</strong> checks first, then—only when a new announcement day is waiting—ranks the shortlist and publishes one combined digest. Repeating it on the same announcement does not create another digest.</p><p>This specialist recipe, shortlist and ntfy threshold are separate from ordinary feed summaries.</p><a class="button-link" href="/?settings=arxiv">Open ArXiv module settings</a>{% else %}<p><strong>Check feeds</strong> reads the selected RSS and Atom documents and stores new feed entries. It does not open linked webpages or use AI.</p><p><strong>Update this summary</strong> checks those feeds, then sends waiting titles and feed-provided descriptions to your configured model. Each entry is evaluated once after a successful response; DistillFeed then publishes one new summary for this exact selection.</p><p>Entries excluded by you are never selected. Sources set to “Only on request” are included when you update their own summary.</p><a class="button-link" href="/?settings=ai">Open AI summary settings</a>{% endif %}</div></dialog>
+  <dialog id="summary-help-dialog" class="summary-help-dialog" aria-labelledby="summary-help-title"><div class="summary-help-card"><header><h2 id="summary-help-title">{% if is_arxiv_scope %}How the daily arXiv digest works{% else %}How this summary is updated{% endif %}</h2><button id="summary-help-close" type="button" aria-label="Close help">×</button></header>{% if is_arxiv_scope %}<p><strong>Check arXiv</strong> reads every configured category and locally screens unseen papers. It does not call the ranking model.</p><p><strong>Update remaining arXiv</strong> first checks the configured categories, then ranks every locally eligible paper that still lacks an AI score. It also repairs missing historical daily digests. Work is partitioned by stored publication day, and already AI-scored papers are reused instead of re-ranked.</p><p>This specialist recipe, shortlist and ntfy threshold are separate from ordinary feed summaries.</p><a class="button-link" href="/?settings=arxiv">Open ArXiv module settings</a>{% else %}<p><strong>Check feeds</strong> reads the selected RSS and Atom documents and stores new feed entries. It does not open linked webpages or use AI.</p><p><strong>Update this summary</strong> checks those feeds, then sends waiting titles and feed-provided descriptions to your configured model. Each entry is evaluated once after a successful response; DistillFeed then publishes one new summary for this exact selection.</p><p>Entries excluded by you are never selected. Sources set to “Only on request” are included when you update their own summary.</p><a class="button-link" href="/?settings=ai">Open AI summary settings</a>{% endif %}</div></dialog>
 
   <dialog id="group-dialog"><form method="dialog" id="group-form"><h2>Add group</h2>
     <label>Title<input name="title" maxlength="200" required></label>
@@ -341,7 +292,7 @@
         {% if arxiv_available %}<details id="settings-arxiv" class="settings-panel" data-settings-panel>
           <summary class="settings-panel-summary"><span class="settings-nav-icon ai" aria-hidden="true">α</span><span><strong>ArXiv module</strong><small>Independent paper retrieval and digest</small></span></summary>
           <div class="settings-panel-body"><header class="settings-panel-heading"><h3>ArXiv module</h3><p>A separate workflow retrieves selected arXiv categories, keeps every fetched paper, performs local screening, and invokes its specialist AI recipe only for a waiting announcement.</p></header><div class="settings-action-row settings-arxiv-actions"><a class="button-link" href="/arxiv">Browse papers in configured categories</a><button class="plugin-settings-action" data-url="/api/plugins/arxiv_digest/actions/test-ntfy" data-static-disabled="{{ 'false' if arxiv_enabled else 'true' }}" type="button" {% if not arxiv_enabled %}disabled{% endif %}>Send test ArXiv alert</button><span>The paper browser opens outside Settings. Every configuration control is directly below.</span></div>
-          <section class="settings-config-section"><h4>Module and daily digest</h4><p>These controls define whether the module runs, which categories it retrieves, and how many papers reach the specialist model.</p><div class="settings-grid">{% for field in config_fields %}{% if field.category == 'arXiv digest' %}{{ config_input(field) }}{% endif %}{% endfor %}{% for field in arxiv_fields %}{% if field.path in ('plugin.arxiv_digest.arxiv.categories','plugin.arxiv_digest.llm.model','plugin.arxiv_digest.llm.max_candidates','plugin.arxiv_digest.llm.ranking_batch_size') %}{{ config_input(field) }}{% endif %}{% endfor %}</div></section>
+          <section class="settings-config-section"><h4>Module and daily digest</h4><p>The local-score threshold decides which papers must receive an AI score. The ranking batch size only bounds each provider request; it never limits the total papers processed for a day.</p><div class="settings-grid">{% for field in config_fields %}{% if field.category == 'arXiv digest' %}{{ config_input(field) }}{% endif %}{% endfor %}{% for field in arxiv_fields %}{% if field.path in ('plugin.arxiv_digest.arxiv.categories','plugin.arxiv_digest.llm.model','plugin.arxiv_digest.llm.ranking_batch_size') %}{{ config_input(field) }}{% endif %}{% endfor %}</div></section>
           <section class="settings-config-section"><h4>Local screening and AI ranking</h4><p>Local signals determine the shortlist; AI and local weights determine the combined decision. No paper is deleted when it is screened out.</p><div class="settings-grid">{% for field in arxiv_fields %}{% if field.path.startswith('plugin.arxiv_digest.filters.') %}{{ config_input(field) }}{% endif %}{% endfor %}{% for field in arxiv_fields %}{% if field.path == 'plugin.arxiv_digest.llm.system_prompt' %}{{ config_input(field) }}{% endif %}{% endfor %}</div></section>
           <section class="settings-config-section"><h4>Retrieval and recovery</h4><p>These limits control initial history, missed-announcement backfill, request pacing, and safe overlap after interruption.</p><div class="settings-grid">{% for field in arxiv_fields %}{% if field.path.startswith('plugin.arxiv_digest.arxiv.') and field.path != 'plugin.arxiv_digest.arxiv.categories' %}{{ config_input(field) }}{% endif %}{% endfor %}</div></section>
           <section class="settings-config-section"><h4>ArXiv-specific Ntfy delivery</h4><p>These alerts use the specialist arXiv score and remain independent of ordinary feed alerts.</p><div class="settings-grid">{% for field in arxiv_fields %}{% if field.path.startswith('plugin.arxiv_digest.notifications.') %}{{ config_input(field) }}{% endif %}{% endfor %}</div></section></div>
@@ -381,6 +332,8 @@
     </div>
   </form></dialog>
 
-  <script src="{{ url_for('static', filename='app.js', v='0.23.7') }}" defer></script>
+  <script src="{{ url_for('static', filename='review-state.js', v='0.24.1-final') }}" defer></script>
+  <script src="{{ url_for('static', filename='review.js', v='0.24.1-final') }}" defer></script>
+  <script src="{{ url_for('static', filename='app.js', v='0.24.1-final') }}" defer></script>
 </body>
 </html>

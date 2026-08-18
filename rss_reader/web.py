@@ -68,6 +68,14 @@ from .plugins import (
     update_plugin_settings,
 )
 from .presentation import render_summary_markdown
+from .review import (
+    finish_review_day,
+    list_review_day_items,
+    list_review_days,
+    parse_review_filters,
+    resolve_review_scope,
+    review_item_details,
+)
 from .scheduler import BackgroundScheduler, defer_next_refresh
 from .service import run_refresh, run_summary, run_update_summaries, start_thread
 from .weather import get_weather
@@ -261,12 +269,22 @@ def _order_reader_page(data: dict[str, Any]) -> None:
         timestamp = str(item.get("published_at") or item.get("discovered_at") or "")
         day = timestamp[:10]
         relevance = item.get("display_relevance", item.get("relevance"))
+        ranked = relevance is not None
         try:
-            score = float(relevance) if relevance is not None else -1.0
+            score = float(relevance) if ranked else -1.0
         except (TypeError, ValueError):
+            ranked = False
             score = -1.0
+        local_relevance = item.get("display_local_relevance")
+        try:
+            local_score = float(local_relevance) if local_relevance is not None else -1.0
+        except (TypeError, ValueError):
+            local_score = -1.0
         if profile == "relevance":
-            return day, score, timestamp, int(item.get("id") or 0)
+            # Real AI-ranked items always precede local-only/unranked items.
+            # Local score is only a tie-break/secondary order, never a surrogate
+            # AI relevance score.
+            return day, int(ranked), score, local_score, timestamp, int(item.get("id") or 0)
         return day, timestamp, int(item.get("id") or 0)
 
     data["items"].sort(key=item_key, reverse=True)
@@ -318,6 +336,7 @@ def _group_tree(connection) -> list[dict[str, Any]]:
             "summary_interval_hours": int(row["summary_interval_hours"]),
             "summary_item_budget": int(row["summary_item_budget"]),
             "ai_priority": str(row["ai_priority"]),
+            "review_display_mode": str(row["review_display_mode"] or "daily"),
             "children": [], "feeds": [], "entries": [], "unread": 0, "errors": 0,
             "arxiv_feeds": 0, "ordinary_feeds": 0, "is_arxiv": False,
         }
@@ -435,6 +454,66 @@ def _active_summary_for_scope(connection, group_id: int, feed_id: int | None):
     return _summary_for_scope(connection, group_id, feed_id)
 
 
+def _arxiv_daily_summary_blocks(connection, group_id: int) -> list[dict[str, Any]]:
+    """Return the latest successful arXiv digest revision for every stored day."""
+    rows = connection.execute(
+        """SELECT s.*,g.title AS group_title,lr.completed_at,lr.model,
+                  lr.input_tokens,lr.cached_input_tokens,lr.output_tokens,
+                  lr.estimated_cost_usd,lr.deferred_items,lr.id AS run_id,
+                  (SELECT MIN(substr(COALESCE(i.published_at,i.discovered_at),1,10))
+                     FROM summary_items day_si JOIN items i ON i.id=day_si.item_id
+                    WHERE day_si.summary_id=s.id) AS first_day,
+                  (SELECT MAX(substr(COALESCE(i.published_at,i.discovered_at),1,10))
+                     FROM summary_items day_si JOIN items i ON i.id=day_si.item_id
+                    WHERE day_si.summary_id=s.id) AS last_day,
+                  COALESCE(
+                    (SELECT MAX(substr(COALESCE(i.published_at,i.discovered_at),1,10))
+                       FROM summary_items day_si JOIN items i ON i.id=day_si.item_id
+                      WHERE day_si.summary_id=s.id),
+                    substr(s.created_at,1,10)
+                  ) AS digest_day
+             FROM summaries s JOIN groups g ON g.id=s.group_id
+             JOIN llm_runs lr ON lr.id=s.llm_run_id
+            WHERE lr.status='success'
+              AND lr.prompt_version LIKE 'distillfeed-arxiv-%'
+              AND CASE WHEN s.scope_id IS NOT NULL THEN s.scope_kind
+                       WHEN s.scope_feed_id IS NOT NULL THEN 'feed' ELSE 'group' END='group'
+              AND COALESCE(s.scope_id,s.group_id)=?
+            ORDER BY digest_day DESC,lr.id DESC""",
+        (group_id,),
+    ).fetchall()
+    result: list[dict[str, Any]] = []
+    seen_days: set[str] = set()
+    for row in rows:
+        first_day = str(row["first_day"] or "")
+        last_day = str(row["last_day"] or "")
+        # Never present a legacy multi-day digest as though it belonged to its
+        # latest paper date. Recovery will rebuild those dates independently.
+        if not first_day or first_day != last_day:
+            continue
+        day = str(row["digest_day"] or row["created_at"] or "")[:10]
+        if day in seen_days:
+            continue
+        seen_days.add(day)
+        items = connection.execute(
+            """SELECT si.*,i.title,i.url,i.feed_id,s.group_id,
+                      f.title AS feed_title,g.title AS group_title
+                 FROM summary_items si JOIN summaries s ON s.id=si.summary_id
+                 JOIN items i ON i.id=si.item_id JOIN feeds f ON f.id=i.feed_id
+                 JOIN groups g ON g.id=s.group_id
+                WHERE si.summary_id=? AND si.included=1
+                ORDER BY si.importance DESC,si.rank""",
+            (int(row["id"]),),
+        ).fetchall()
+        result.append({
+            "day": day,
+            "summary": dict(row),
+            "items": items,
+            "sections": _json_list(row["sections_json"]),
+        })
+    return result
+
+
 def _cluster_summary_items(rows) -> list[dict[str, Any]]:
     clusters: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -454,7 +533,7 @@ def _page_data(
     tree = _group_tree(connection)
     all_groups = connection.execute(
         """SELECT g.id, g.title, g.parent_id, g.llm_enabled, g.ai_mode, g.ai_priority,
-                  g.summary_interval_hours, g.summary_item_budget
+                  g.summary_interval_hours, g.summary_item_budget, g.review_display_mode
            FROM groups g
            WHERE NOT EXISTS (
                SELECT 1 FROM feeds plugin_feed
@@ -494,7 +573,11 @@ def _page_data(
     scope_ai_priority = "normal"
     scope_summary_interval_hours = 0
     scope_summary_item_budget = 0
+    review_preference_group_id = group_id
+    review_display_mode = "daily"
     if group_id is not None:
+        stored_review_mode = str(group_lookup[group_id]["review_display_mode"] or "daily")
+        review_display_mode = stored_review_mode if stored_review_mode in {"daily", "direct"} else "daily"
         if feed_id is not None:
             is_arxiv_scope = str(feed_lookup[feed_id]["xml_url"]).startswith(
                 "plugin://arxiv/"
@@ -541,8 +624,11 @@ def _page_data(
     summary_overviews = []
     summary_sections: list[dict[str, Any]] = []
     summary_items = []
+    summary_days: list[dict[str, Any]] = []
     summary_stale = False
     scope_pending_items = 0
+    scope_pending_days = 0
+    scope_missing_daily_digests = 0
     scope_item_count = 0
     scope_arxiv_error = None
     scope_title = (
@@ -552,8 +638,6 @@ def _page_data(
     if group_id is not None:
         group_ids = [group_id] if feed_id is not None else group_descendant_ids(connection, group_id)
         marks = ",".join("?" for _ in group_ids)
-        enabled_group_ids = set(llm_enabled_group_ids(connection))
-        active_marks = ",".join(str(identifier) for identifier in sorted(enabled_group_ids)) or "NULL"
         where = "i.feed_id=?" if feed_id is not None else f"f.group_id IN ({marks})"
         parameters = [feed_id] if feed_id is not None else group_ids
         scope_item_count = int(connection.execute(
@@ -561,18 +645,10 @@ def _page_data(
                  WHERE f.enabled=1 AND {where}""",
             parameters,
         ).fetchone()[0])
-        items = connection.execute(
-            f"""SELECT i.*, f.title AS feed_title, eval.relevance AS relevance,
-                       eval.justification AS relevance_justification
-                       ,CASE WHEN f.llm_enabled=1 AND f.group_id IN ({active_marks}) THEN 1 ELSE 0 END AS ai_active
-                       ,COALESCE((SELECT GROUP_CONCAT(t.name, ' · ') FROM item_tags it
-                         JOIN tags t ON t.id=it.tag_id WHERE it.item_id=i.id), '') AS tags
-                FROM items i JOIN feeds f ON f.id=i.feed_id
-                LEFT JOIN ai_evaluations eval ON eval.item_id=i.id AND eval.current=1
-                WHERE f.enabled=1 AND {where}
-                ORDER BY COALESCE(i.published_at, i.discovered_at) DESC,i.id DESC""",
-            parameters,
-        ).fetchall()
+        # The unified review stream retrieves bounded pages through /api/review.
+        # Do not duplicate an entire scope in the initial HTML: one busy arXiv
+        # day can contain hundreds of entries and their abstracts.
+        items = []
         summary_feed_id = None if is_arxiv_scope else feed_id
         scope_plan = build_plan(
             connection, config,
@@ -582,21 +658,17 @@ def _page_data(
         scope_pending_items = int(scope_plan["ready_count"])
         if is_arxiv_scope:
             try:
-                scope_pending_items = int(connection.execute(
-                    """SELECT COUNT(*) FROM distillfeed_arxiv_papers ap
-                       JOIN items i ON i.id=ap.item_id JOIN feeds f ON f.id=i.feed_id
-                       WHERE ap.evaluation_status='pending' AND f.group_id=?""",
-                    (group_id,),
-                ).fetchone()[0])
-                arxiv_state = {
-                    str(row["key"]): str(row["value"])
-                    for row in connection.execute(
-                        "SELECT key,value FROM distillfeed_arxiv_state"
-                    ).fetchall()
-                }
-                # Pending evidence is actionable even when it arrived later on
-                # the same publication date as the current digest.
-                summary_stale = scope_pending_items > 0
+                arxiv_plan = arxiv_readiness(
+                    connection, config, require_enabled=False,
+                ).get("plan", {})
+                scope_pending_items = int(arxiv_plan.get("pending_items", 0) or 0)
+                scope_pending_days = int(arxiv_plan.get("pending_days", 0) or 0)
+                scope_missing_daily_digests = int(
+                    arxiv_plan.get("missing_daily_digests", 0) or 0
+                )
+                # Either missing AI scores or a historical multi-day summary is
+                # actionable. The manual arXiv button completes both kinds of work.
+                summary_stale = scope_pending_days > 0
                 last_arxiv_run = connection.execute(
                     """SELECT status,error FROM llm_runs
                        WHERE prompt_version LIKE 'distillfeed-arxiv-%'
@@ -648,6 +720,8 @@ def _page_data(
                     ORDER BY si.importance DESC,si.rank""",
                 (summary_ids[0],),
             ).fetchall()
+        if is_arxiv_scope:
+            summary_days = []
     latest_refresh = connection.execute("SELECT * FROM refresh_runs ORDER BY id DESC LIMIT 1").fetchone()
     latest_llm = connection.execute("SELECT * FROM llm_runs ORDER BY id DESC LIMIT 1").fetchone()
     system_notices = synchronize_issues(connection, config)
@@ -661,6 +735,7 @@ def _page_data(
         "selected_group_id": group_id, "selected_feed_id": feed_id, "scope_title": scope_title,
         "items": items, "summary": summary, "summary_overviews": summary_overviews,
         "summary_items": summary_items, "summary_clusters": _cluster_summary_items(summary_items),
+        "summary_days": summary_days,
         "summary_sections": summary_sections, "merged_summary_count": len(summary_ids) if summary else 0,
         "archived_summary_exists": archived_summary_exists if group_id is not None else False,
         "is_arxiv_scope": is_arxiv_scope,
@@ -669,9 +744,13 @@ def _page_data(
         "scope_ai_priority": scope_ai_priority,
         "scope_summary_interval_hours": scope_summary_interval_hours,
         "scope_summary_item_budget": scope_summary_item_budget,
+        "review_preference_group_id": review_preference_group_id,
+        "review_display_mode": review_display_mode,
         "summary_minimum_relevance": int(config.get("llm", "minimum_relevance", 70)),
         "summary_evidence_hours": int(config.get("llm", "rolling_digest_hours", 24)),
         "scope_pending_items": scope_pending_items,
+        "scope_pending_days": scope_pending_days,
+        "scope_missing_daily_digests": scope_missing_daily_digests,
         "scope_item_count": scope_item_count,
         "scope_arxiv_error": scope_arxiv_error,
         "summary_stale": summary_stale,
@@ -1161,6 +1240,96 @@ def create_app(config_path: str | None = None) -> Flask:
         response = jsonify({"csrf_token": csrf_token()})
         response.headers["Cache-Control"] = "no-store"
         return response
+
+    def _review_scope(connection, payload: dict[str, Any] | None = None):
+        values = payload if payload is not None else request.args
+        group_id = values.get("group_id")
+        feed_id = values.get("feed_id")
+        try:
+            parsed_group = int(group_id) if group_id not in (None, "") else None
+            parsed_feed = int(feed_id) if feed_id not in (None, "") else None
+        except (TypeError, ValueError) as exc:
+            raise ValueError("group_id and feed_id must be integers") from exc
+        try:
+            return resolve_review_scope(
+                connection, group_id=parsed_group, feed_id=parsed_feed,
+            )
+        except LookupError as exc:
+            abort(404, str(exc))
+
+    def _safe_review_item_urls(item: dict[str, Any]) -> dict[str, Any]:
+        result = dict(item)
+        result["url"] = safe_external_url(result.get("url")) or ""
+        result["pdf_url"] = safe_external_url(result.get("pdf_url")) or ""
+        return result
+
+    def _review_error(exc: ValueError):
+        response = jsonify({"error": str(exc)[:500]})
+        response.status_code = 400
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.get("/api/review/days")
+    def review_days():
+        try:
+            minimum = int(config.get("llm", "minimum_relevance", 70))
+            filters = parse_review_filters(
+                request.args, default_min_ai=minimum,
+            )
+            with connect(config.database_path) as connection:
+                scope = _review_scope(connection)
+                result = list_review_days(
+                    connection, scope, filters, minimum_relevance=minimum,
+                )
+        except ValueError as exc:
+            return _review_error(exc)
+        response = jsonify(result)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.get("/api/review/days/<day>/items")
+    def review_day_items(day: str):
+        try:
+            minimum = int(config.get("llm", "minimum_relevance", 70))
+            filters = parse_review_filters(
+                request.args, default_min_ai=minimum,
+            )
+            with connect(config.database_path) as connection:
+                scope = _review_scope(connection)
+                result = list_review_day_items(
+                    connection, scope, day, filters, minimum_relevance=minimum,
+                    cursor=str(request.args.get("cursor") or ""),
+                )
+        except ValueError as exc:
+            return _review_error(exc)
+        result["items"] = [_safe_review_item_urls(item) for item in result["items"]]
+        response = jsonify(result)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.get("/api/review/items/<int:item_id>")
+    def review_item(item_id: int):
+        minimum = int(config.get("llm", "minimum_relevance", 70))
+        with connect(config.database_path) as connection:
+            scope = _review_scope(connection)
+            result = review_item_details(
+                connection, scope, item_id, minimum_relevance=minimum,
+            )
+        if result is None:
+            return jsonify({"error": "Item not found in this review scope"}), 404
+        result = _safe_review_item_urls(result)
+        response = jsonify(result)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.post("/api/review/days/<day>/finish")
+    @mutation
+    def finish_review(day: str):
+        payload = request.get_json(silent=True) or {}
+        with connect(config.database_path) as connection, transaction(connection, immediate=True):
+            scope = _review_scope(connection, payload)
+            result = finish_review_day(connection, scope, day)
+        return jsonify(result)
 
     @app.post("/api/notifications/ntfy/test")
     @mutation
@@ -1984,7 +2153,7 @@ def create_app(config_path: str | None = None) -> Flask:
         owner = secrets.token_hex(16)
         with connect(config.database_path) as connection:
             reserved = acquire_lock(
-                connection, "summary-update", owner, ttl_minutes=180, exclusive=True,
+                connection, "summary-update", owner, ttl_minutes=720, exclusive=True,
             )
             operation = create_operation(
                 connection, kind="arxiv", trigger="browser",
@@ -2346,6 +2515,9 @@ def create_app(config_path: str | None = None) -> Flask:
             budget = int(payload.get("summary_item_budget", row["summary_item_budget"]))
             priority = str(payload.get("ai_priority", row["ai_priority"])).strip().casefold()
             mode = str(payload.get("ai_mode", row["ai_mode"])).strip().casefold()
+            review_display_mode = str(
+                payload.get("review_display_mode", row["review_display_mode"])
+            ).strip().casefold()
             if not 0 <= interval <= 8760:
                 return jsonify({"error": "Summary interval must be between 0 and 8760 hours"}), 400
             if not 0 <= budget <= 1000:
@@ -2354,6 +2526,8 @@ def create_app(config_path: str | None = None) -> Flask:
                 return jsonify({"error": "Summary mode must be Automatic, Only on request, or Excluded"}), 400
             if priority not in {"high", "normal", "low", "manual", "off"}:
                 return jsonify({"error": "AI priority must be High, Normal, or Low"}), 400
+            if review_display_mode not in {"daily", "direct"}:
+                return jsonify({"error": "Review display mode must be Focused days or Direct item list"}), 400
             # Translate legacy writes while keeping one canonical mode.
             if "ai_mode" not in payload and "llm_enabled" in payload:
                 mode = "automatic" if llm_enabled else "off"
@@ -2370,12 +2544,15 @@ def create_app(config_path: str | None = None) -> Flask:
                 legacy_priority = priority if priority in {"high", "normal", "low"} else "normal"
             connection.execute(
                 """UPDATE groups SET title=?,llm_enabled=?,summary_interval_hours=?,summary_item_budget=?,
-                       ai_mode=?,ai_priority=?
+                       ai_mode=?,ai_priority=?,review_display_mode=?
                    WHERE id=?""",
-                (title, llm_enabled, interval, budget, mode, legacy_priority, group_id),
+                (
+                    title, llm_enabled, interval, budget, mode, legacy_priority,
+                    review_display_mode, group_id,
+                ),
             )
             write_database_opml(connection, config.working_opml_path)
-        return jsonify({"status": "ok"})
+        return jsonify({"status": "ok", "review_display_mode": review_display_mode})
 
     @app.delete("/api/groups/<int:group_id>")
     @mutation

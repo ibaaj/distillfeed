@@ -8,7 +8,7 @@ fi
 set -Eeuo pipefail
 umask 077
 
-EXPECTED_VERSION="0.23.7"
+EXPECTED_VERSION="0.24.1"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 DEFAULT_ARCHIVE="$SCRIPT_DIR/distillfeed-$EXPECTED_VERSION.tar.gz"
 
@@ -662,6 +662,7 @@ required_files = {
     "distillfeed/rss_reader/generated_feeds.py",
     "distillfeed/rss_reader/launcher.py",
     "distillfeed/rss_reader/ntfy_policy.py",
+    "distillfeed/rss_reader/review.py",
     "distillfeed/rss_reader/secret_store.py",
     "distillfeed/rss_reader/setup_service.py",
     "distillfeed/rss_reader/setup_state.py",
@@ -669,6 +670,9 @@ required_files = {
     "distillfeed/rss_reader/resources/starter-subscriptions.opml",
     "distillfeed/rss_reader/static/setup.css",
     "distillfeed/rss_reader/static/setup.js",
+    "distillfeed/rss_reader/static/review-state.js",
+    "distillfeed/rss_reader/static/review.js",
+    "distillfeed/rss_reader/templates/index.html",
     "distillfeed/rss_reader/templates/setup.html",
     "distillfeed/distillfeed_arxiv/__init__.py",
     "distillfeed/distillfeed_arxiv/plugin.py",

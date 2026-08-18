@@ -97,7 +97,7 @@ def settings_fields(main_config: Any) -> list[dict[str, Any]]:
         field("arxiv.api_page_size", "arXiv API page size", int(cfg["arxiv"].get("api_page_size", 100)), common=False),
         field("arxiv.api_backfill_enabled", "Use API backfill for missed announcements", bool(cfg["arxiv"].get("api_backfill_enabled", True)), common=False),
         field("arxiv.api_interval_hours", "Minimum hours between API backfills", int(cfg["arxiv"].get("api_interval_hours", 20)), common=False),
-        field("llm.max_candidates", "Maximum papers ranked per digest", int(cfg["llm"].get("max_candidates", 100)), common=False),
+        field("llm.max_candidates", "Legacy ranking cap (kept for compatibility; local threshold controls eligibility)", int(cfg["llm"].get("max_candidates", 100)), common=False),
         field("llm.ranking_batch_size", "Papers per ranking request", int(cfg["llm"].get("ranking_batch_size", 20)), common=False),
         field("filters.preferred_authors", "Preferred authors (one per line)", list_value("filters", "preferred_authors"), common=False, widget="textarea", rows=8),
         field("filters.blocked_authors_exact", "Blocked authors (one per line)", list_value("filters", "blocked_authors_exact"), common=False, widget="textarea", rows=5),

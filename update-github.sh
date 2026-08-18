@@ -8,7 +8,7 @@ fi
 set -Eeuo pipefail
 umask 077
 
-EXPECTED_VERSION="0.23.7"
+EXPECTED_VERSION="0.24.1"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 ARCHIVE="$SCRIPT_DIR/distillfeed-update-$EXPECTED_VERSION.zip"
 BRANCH="main"
@@ -275,7 +275,9 @@ with tarfile.open(payload, mode="r:gz") as archive:
 
 required = {
     "distillfeed/pyproject.toml", "distillfeed/rss_reader/web.py",
-    "distillfeed/rss_reader/static/app.js", "distillfeed/update-github.sh",
+    "distillfeed/rss_reader/review.py", "distillfeed/rss_reader/templates/index.html",
+    "distillfeed/rss_reader/static/app.js", "distillfeed/rss_reader/static/review-state.js",
+    "distillfeed/rss_reader/static/review.js", "distillfeed/update-github.sh",
     "distillfeed/upd.sh", "distillfeed/test-distillfeed.sh",
 }
 missing = required - regular_files

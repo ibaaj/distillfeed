@@ -135,3 +135,37 @@ def test_initialize_adds_device_alert_policy_audit_columns_to_legacy_deliveries(
         "minimum_relevance", "policy_scope_kind", "policy_scope_id", "policy_label",
     } <= columns
     assert policy_table is not None
+
+
+def test_initialize_adds_group_review_display_mode_with_safe_default(tmp_path):
+    database = tmp_path / "legacy-group-layout.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE groups (
+                id INTEGER PRIMARY KEY,
+                parent_id INTEGER REFERENCES groups(id) ON DELETE CASCADE,
+                title TEXT NOT NULL,
+                position INTEGER NOT NULL DEFAULT 0,
+                llm_enabled INTEGER NOT NULL DEFAULT 1,
+                summary_interval_hours INTEGER NOT NULL DEFAULT 0,
+                summary_item_budget INTEGER NOT NULL DEFAULT 0,
+                ai_mode TEXT NOT NULL DEFAULT 'automatic',
+                ai_priority TEXT NOT NULL DEFAULT 'normal',
+                created_at TEXT NOT NULL,
+                UNIQUE(parent_id, title)
+            );
+            INSERT INTO groups(id,parent_id,title,position,created_at)
+            VALUES(1,NULL,'Legacy group',0,'2026-08-18T00:00:00+00:00');
+            """
+        )
+
+    initialize(database)
+
+    with sqlite3.connect(database) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(groups)")}
+        mode = connection.execute(
+            "SELECT review_display_mode FROM groups WHERE id=1"
+        ).fetchone()[0]
+    assert "review_display_mode" in columns
+    assert mode == "daily"

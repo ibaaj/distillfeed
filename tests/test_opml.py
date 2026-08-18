@@ -100,3 +100,51 @@ def test_opml_rejects_pathological_nesting():
     nested = "<outline text='G'>" * 51 + "</outline>" * 51
     with pytest.raises(ValueError, match="nesting"):
         parse_opml_bytes(f"<opml><body>{nested}</body></opml>".encode())
+
+
+def test_group_review_display_mode_round_trips_through_opml(configured):
+    source = b'''<?xml version="1.0"?>
+    <opml version="2.0"><body>
+      <outline text="YouTube" distillfeedReviewDisplayMode="direct">
+        <outline type="rss" text="Channel" xmlUrl="https://example.test/youtube.xml" />
+      </outline>
+    </body></opml>'''
+    parsed = parse_opml_bytes(source)
+    assert parsed[0].review_display_mode == "direct"
+
+    with connect(configured.database_path) as connection:
+        import_groups(connection, parsed)
+        row = connection.execute(
+            "SELECT id,review_display_mode FROM groups WHERE title='YouTube'"
+        ).fetchone()
+        assert row["review_display_mode"] == "direct"
+        exported = serialize_opml(build_tree_from_database(connection))
+
+    assert b'distillfeedReviewDisplayMode="direct"' in exported
+    reparsed = parse_opml_bytes(exported)
+    youtube = next(group for group in reparsed if group.title == "YouTube")
+    assert youtube.review_display_mode == "direct"
+
+
+def test_opml_without_review_display_mode_preserves_existing_group_preference(configured):
+    source = b'''<opml version="2.0"><body>
+      <outline text="YouTube"><outline type="rss" text="Channel" xmlUrl="https://example.test/youtube.xml" /></outline>
+    </body></opml>'''
+    with connect(configured.database_path) as connection:
+        import_groups(connection, parse_opml_bytes(source))
+        connection.execute(
+            "UPDATE groups SET review_display_mode='direct' WHERE title='YouTube'"
+        )
+        import_groups(connection, parse_opml_bytes(source))
+        mode = connection.execute(
+            "SELECT review_display_mode FROM groups WHERE title='YouTube'"
+        ).fetchone()[0]
+    assert mode == "direct"
+
+
+def test_opml_rejects_invalid_review_display_mode():
+    source = b'''<opml version="2.0"><body>
+      <outline text="Bad" distillfeedReviewDisplayMode="expanded-ish" />
+    </body></opml>'''
+    with pytest.raises(ValueError, match="review display mode"):
+        parse_opml_bytes(source)

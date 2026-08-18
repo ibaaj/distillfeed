@@ -132,7 +132,7 @@
     if (jobCancel) { jobCancel.disabled = true; jobCancel.textContent = 'Stop'; }
   }
   function phaseMessage(status) {
-    if (status.phase === 'arxiv-digest') return 'Ranking the new arXiv announcement and writing its daily digest…';
+    if (status.phase === 'arxiv-digest') return 'Processing all remaining arXiv days: AI ranking where needed, then one digest per day…';
     if (status.phase === 'composing') return 'Writing updated summaries from completed evaluations…';
     if (status.phase === 'evaluating' && status.ai_job) return `Evaluating ${status.ai_job.completed_items} of ${status.ai_job.planned_items} selected feed entries…`;
     if (status.phase === 'summarizing') return 'Evaluating feed entries and updating summaries…';
@@ -299,7 +299,7 @@
     startJob(
       arxivDigest ? '/api/arxiv/update' : '/api/summarize',
       selectedScopePayload(),
-      arxivDigest ? 'Checking for a new arXiv announcement and updating its daily digest…' : `Updating the summary for ${scopeName}…`,
+      arxivDigest ? 'Checking arXiv and processing all remaining daily updates…' : `Updating the summary for ${scopeName}…`,
     );
   }
   const summaryAIConfig = document.getElementById('summary-ai-config');
@@ -484,15 +484,15 @@
         document.querySelectorAll(`.item-row[data-feed-id="${id}"] .item-feed`).forEach(element => { element.textContent = title; });
         document.querySelectorAll(`.summary-feed-name[data-feed-id="${id}"]`).forEach(element => { element.textContent = title; });
         if (document.querySelector('meta[name="selected-feed-id"]')?.content === id) {
-          document.getElementById('items-scope-title').textContent = title;
-          document.getElementById('summary-scope-title').textContent = ` · ${title}`;
+          const scopeTitle = document.getElementById('items-scope-title');
+          if (scopeTitle) scopeTitle.textContent = title;
         }
       } else {
         document.querySelectorAll(`.summary-group-name[data-group-id="${id}"]`).forEach(element => { element.textContent = title; });
         document.querySelectorAll(`#group-dialog option[value="${id}"], #feed-dialog option[value="${id}"]`).forEach(option => { option.textContent = title; });
         if (!document.querySelector('meta[name="selected-feed-id"]')?.content && document.querySelector('meta[name="selected-group-id"]')?.content === id) {
-          document.getElementById('items-scope-title').textContent = title;
-          document.getElementById('summary-scope-title').textContent = ` · ${title}`;
+          const scopeTitle = document.getElementById('items-scope-title');
+          if (scopeTitle) scopeTitle.textContent = title;
         }
       }
       renameDialog.close(); notify('Name saved');
@@ -1191,11 +1191,11 @@
     const relevance = mode === 'relevance';
     if (relevancePerDayControl) relevancePerDayControl.hidden = !relevance;
     if (!itemViewDescription) return;
-    const choice = relevancePerDayLimit?.value || '25';
+    const choice = relevancePerDayLimit?.value || 'all';
     itemViewDescription.textContent = relevance
       ? choice === 'all'
-        ? 'All AI-ranked articles for every stored day'
-        : `Top ${choice} AI-ranked articles for each stored day`
+        ? 'AI-ranked articles first for every stored day; unranked articles follow'
+        : `Top ${choice} AI-ranked articles for each stored day; unranked articles follow`
       : 'All articles for every stored day';
   }
   function sortItems(mode) {
@@ -1205,8 +1205,12 @@
       const dayOrder = itemDay(b).key.localeCompare(itemDay(a).key);
       if (dayOrder) return dayOrder;
       if (mode === 'relevance') {
+        const rankedOrder = Number(b.dataset.aiRanked || 0) - Number(a.dataset.aiRanked || 0);
+        if (rankedOrder) return rankedOrder;
         const relevanceOrder = Number(b.dataset.relevance) - Number(a.dataset.relevance);
         if (relevanceOrder) return relevanceOrder;
+        const localOrder = Number(b.dataset.localRelevance || -1) - Number(a.dataset.localRelevance || -1);
+        if (localOrder) return localOrder;
       }
       return (b.dataset.date || '').localeCompare(a.dataset.date || '');
     });
@@ -1218,10 +1222,16 @@
     const perDayLimit = mode === 'relevance' ? selectedPerDayLimit() : Number.POSITIVE_INFINITY;
     rows.forEach(row => {
       const day = itemDay(row);
-      const dayRank = (dayRanks.get(day.key) || 0) + 1;
-      dayRanks.set(day.key, dayRank);
+      const aiRanked = Number(row.dataset.aiRanked || 0) === 1;
+      let dayRank = 0;
+      if (mode !== 'relevance' || aiRanked) {
+        dayRank = (dayRanks.get(day.key) || 0) + 1;
+        dayRanks.set(day.key, dayRank);
+      }
       row.dataset.dayRank = String(dayRank);
-      row.dataset.perDayVisible = dayRank <= perDayLimit ? '1' : '0';
+      row.dataset.perDayVisible = mode === 'relevance' && !aiRanked
+        ? '1'
+        : dayRank <= perDayLimit ? '1' : '0';
       row.hidden = row.dataset.perDayVisible === '0';
       if (day.key !== previousKey) {
         group = document.createElement('section');
@@ -1545,7 +1555,7 @@
   });
   if ('serviceWorker' in navigator) {
     const offline = document.querySelector('meta[name="offline-cache-enabled"]')?.content === 'true';
-    if (offline) navigator.serviceWorker.register('/static/service-worker.js').catch(() => {});
+    if (offline) navigator.serviceWorker.register('/static/service-worker.js?v=0.24.1-final').catch(() => {});
     else Promise.all([
       navigator.serviceWorker.getRegistrations().then(registrations => Promise.all(
         registrations.map(registration => registration.unregister())

@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS groups (
     summary_item_budget INTEGER NOT NULL DEFAULT 0,
     ai_mode TEXT NOT NULL DEFAULT 'automatic',
     ai_priority TEXT NOT NULL DEFAULT 'normal',
+    review_display_mode TEXT NOT NULL DEFAULT 'daily'
+        CHECK(review_display_mode IN ('daily','direct')),
     created_at TEXT NOT NULL,
     UNIQUE(parent_id, title)
 );
@@ -370,6 +372,14 @@ def initialize(path: str | Path) -> None:
                        WHEN ai_priority='manual' THEN 'manual'
                        ELSE 'automatic' END"""
             )
+        if "review_display_mode" not in group_columns:
+            connection.execute(
+                "ALTER TABLE groups ADD COLUMN review_display_mode TEXT NOT NULL DEFAULT 'daily'"
+            )
+        connection.execute(
+            """UPDATE groups SET review_display_mode='daily'
+               WHERE review_display_mode NOT IN ('daily','direct') OR review_display_mode IS NULL"""
+        )
         feed_columns = {row["name"] for row in connection.execute("PRAGMA table_info(feeds)").fetchall()}
         if "llm_enabled" not in feed_columns:
             connection.execute("ALTER TABLE feeds ADD COLUMN llm_enabled INTEGER NOT NULL DEFAULT 1")

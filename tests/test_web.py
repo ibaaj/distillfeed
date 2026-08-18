@@ -6,7 +6,7 @@ import pytest
 from rss_reader.db import connect, utcnow
 from rss_reader.config import load_config, save_config
 from rss_reader.opml import parse_opml_bytes
-from rss_reader.web import _order_reader_page, create_app
+from rss_reader.web import _arxiv_daily_summary_blocks, _order_reader_page, create_app
 
 
 def csrf_from(response) -> str:
@@ -40,6 +40,131 @@ def test_summary_articles_use_score_order_independently_of_item_order():
     _order_reader_page(data)
     assert [item["id"] for item in data["items"]] == [3, 4, 2, 1]
     assert [item["item_id"] for item in data["summary_items"]] == [4, 3, 2, 1]
+
+
+def test_relevance_order_never_promotes_local_only_items_over_ai_scores():
+    data = {
+        "item_sort_profile": "relevance",
+        "items": [
+            {"id": 1, "published_at": "2026-08-10T12:00:00+00:00", "display_relevance": 40, "display_local_relevance": 2},
+            {"id": 2, "published_at": "2026-08-10T11:00:00+00:00", "display_relevance": None, "display_local_relevance": 20},
+            {"id": 3, "published_at": "2026-08-10T10:00:00+00:00", "display_relevance": 10, "display_local_relevance": 1},
+            {"id": 4, "published_at": "2026-08-10T09:00:00+00:00", "display_relevance": None, "display_local_relevance": 5},
+        ],
+        "summary_items": [],
+    }
+
+    _order_reader_page(data)
+
+    assert [item["id"] for item in data["items"]] == [1, 3, 2, 4]
+
+
+
+def test_arxiv_daily_summary_blocks_never_mislabel_legacy_multi_day_digest(configured):
+    with connect(configured.database_path) as connection:
+        group_id = int(connection.execute(
+            "INSERT INTO groups(title,position,created_at) VALUES('arXiv Digest',0,?)", (utcnow(),)
+        ).lastrowid)
+        feed_id = int(connection.execute(
+            "INSERT INTO feeds(group_id,title,xml_url,created_at) VALUES(?,?,?,?)",
+            (group_id, "cs.AI", "plugin://arxiv/cs.AI", utcnow()),
+        ).lastrowid)
+        item_ids = []
+        for index, day in enumerate((10, 11), 1):
+            item_ids.append(int(connection.execute(
+                """INSERT INTO items(feed_id,stable_id,title,published_at,discovered_at)
+                   VALUES(?,?,?,?,?)""",
+                (feed_id, f"legacy-{index}", f"Legacy {index}", f"2026-08-{day:02d}T12:00:00+00:00", utcnow()),
+            ).lastrowid))
+        run_id = int(connection.execute(
+            """INSERT INTO llm_runs(
+                   request_key,started_at,completed_at,status,model,prompt_version,pricing_json
+               ) VALUES('legacy-mixed-web',?,?,'success','model','distillfeed-arxiv-v1','{}')""",
+            (utcnow(), utcnow()),
+        ).lastrowid)
+        summary_id = int(connection.execute(
+            """INSERT INTO summaries(
+                   llm_run_id,group_id,scope_kind,scope_id,policy_hash,overview,changes,
+                   sections_json,created_at
+               ) VALUES(?,?,'group',?,'policy','mixed','','[]',?)""",
+            (run_id, group_id, group_id, utcnow()),
+        ).lastrowid)
+        for rank, item_id in enumerate(item_ids, 1):
+            connection.execute(
+                "INSERT INTO summary_items(summary_id,item_id,included,rank,importance) VALUES(?,?,1,?,80)",
+                (summary_id, item_id, rank),
+            )
+
+        assert _arxiv_daily_summary_blocks(connection, group_id) == []
+
+
+def test_reader_renders_daily_arxiv_summary_items(configured):
+    with connect(configured.database_path) as connection:
+        group_id = int(connection.execute(
+            "INSERT INTO groups(title,position,created_at) VALUES('arXiv Digest',0,?)",
+            (utcnow(),),
+        ).lastrowid)
+        feed_id = int(connection.execute(
+            "INSERT INTO feeds(group_id,title,xml_url,created_at) VALUES(?,?,?,?)",
+            (group_id, "cs.AI", "plugin://arxiv/cs.AI", utcnow()),
+        ).lastrowid)
+        item_id = int(connection.execute(
+            """INSERT INTO items(
+                   feed_id,stable_id,title,url,published_at,discovered_at,description_text
+               ) VALUES(?,?,?,?,?,?,?)""",
+            (
+                feed_id, "daily-render", "Daily render paper",
+                "https://arxiv.org/abs/2608.00001",
+                "2026-08-18T08:00:00+00:00", utcnow(), "Paper abstract",
+            ),
+        ).lastrowid)
+        run_id = int(connection.execute(
+            """INSERT INTO llm_runs(
+                   request_key,started_at,completed_at,status,model,prompt_version,
+                   input_tokens,output_tokens,estimated_cost_usd,pricing_json
+               ) VALUES(?,?,?,'success','model','distillfeed-arxiv-v1',10,5,0.001,'{}')""",
+            ("daily-render", utcnow(), utcnow()),
+        ).lastrowid)
+        summary_id = int(connection.execute(
+            """INSERT INTO summaries(
+                   llm_run_id,group_id,scope_kind,scope_id,policy_hash,overview,changes,
+                   sections_json,created_at
+               ) VALUES(?,?,'group',?,'policy','Daily overview','','[]',?)""",
+            (run_id, group_id, group_id, utcnow()),
+        ).lastrowid)
+        connection.execute(
+            """INSERT INTO summary_items(
+                   summary_id,item_id,included,rank,importance,description,justification
+               ) VALUES(?,?,1,1,91,'Daily description','Daily reason')""",
+            (summary_id, item_id),
+        )
+
+    client = create_app(str(configured.path)).test_client()
+    page = client.get(f"/?group={group_id}")
+
+    assert page.status_code == 200
+    assert b'id="review-app"' in page.data
+    assert b"Update remaining arXiv" in page.data
+    # Items and briefs are loaded through bounded review APIs, not duplicated in
+    # the initial HTML.
+    assert b"Daily render paper" not in page.data
+    days = client.get(
+        f"/api/review/days?group_id={group_id}&preset=everything&from=2026-08-18&to=2026-08-18"
+    )
+    assert days.status_code == 200
+    payload = days.get_json()
+    assert payload["days"][0]["brief"]["selected_count"] == 1
+    items = client.get(
+        f"/api/review/days/2026-08-18/items?group_id={group_id}&preset=everything"
+    )
+    assert items.status_code == 200
+    item = items.get_json()["items"][0]
+    assert item["title"] == "Daily render paper"
+    assert item["ai_score"] == 91
+    details = client.get(f"/api/review/items/{item_id}?group_id={group_id}")
+    assert details.status_code == 200
+    assert "Daily description" in details.get_json()["summary_html"]
+    assert "Paper abstract" in details.get_json()["source_html"]
 
 
 def test_openai_model_presets_keep_cost_rates_in_sync(configured):
@@ -141,7 +266,7 @@ def test_item_details_date_hierarchy_and_portable_exports(configured):
     summaries = client.get("/summaries")
     assert b"Print / PDF" in summaries.data
     assert b'aria-label="Print or save summaries as PDF"' in summaries.data
-    assert b"summary.js?v=0.23.7" in summaries.data
+    assert b"summary.js?v=0.24.1-final" in summaries.data
 
 
 def test_standalone_page_headers_keep_actions_compact(configured):
@@ -156,7 +281,7 @@ def test_standalone_page_headers_keep_actions_compact(configured):
     assert b".page-header .button-link { width: auto;" in stylesheet
 
 
-def test_item_panel_always_loads_stored_dates_and_caps_only_ai_relevance_per_day(configured):
+def test_review_stream_keeps_large_history_out_of_initial_html_and_pages_each_day(configured):
     with connect(configured.database_path) as connection:
         group_id = connection.execute(
             "INSERT INTO groups(title,position,created_at) VALUES('Archive',0,?)", (utcnow(),)
@@ -175,22 +300,31 @@ def test_item_panel_always_loads_stored_dates_and_caps_only_ai_relevance_per_day
         )
     client = create_app(str(configured.path)).test_client()
     page = client.get(f"/?feed={feed_id}")
-    assert page.data.count(b'class="item-row') == 1002
-    assert b"Show all stored items" not in page.data
-    assert b"Show latest 1,000 items" not in page.data
-    assert b'id="relevance-per-day-control" hidden' in page.data
-    assert b'id="relevance-per-day-limit"' in page.data
-    for label in (b"Top 10", b"Top 25", b"Top 50", b"All ranked articles"):
-        assert label in page.data
-    script = client.get("/static/app.js").data
-    assert b"row.dataset.perDayVisible" in script
-    assert b"mode === 'relevance' ? selectedPerDayLimit()" in script
-    assert b"matchesPerDayLimit" in script
-    assert b"All articles for every stored day" in script
+    assert page.status_code == 200
+    assert b'id="review-app"' in page.data
+    assert page.data.count(b'class="item-row') == 0
+    assert b'id="review-page-size"' in page.data
+    assert b"10 items" in page.data and b"25 items" in page.data and b"50 items" in page.data
+
+    days = client.get(f"/api/review/days?feed_id={feed_id}&preset=everything")
+    assert days.status_code == 200
+    payload = days.get_json()
+    assert payload["counts"]["total"] == 1002
+    assert len(payload["days"]) == 28
+    first_day = payload["days"][0]["day"]
+    first_page = client.get(
+        f"/api/review/days/{first_day}/items?feed_id={feed_id}&preset=everything&page_size=10"
+    ).get_json()
+    assert len(first_page["items"]) == 10
+    assert first_page["has_more"] is True
+    assert first_page["next_cursor"]
+
+    script = client.get("/static/review.js").data
+    assert b"Show next" in script
+    assert b"next_cursor" in script
     stylesheet = client.get("/static/app.css").data
-    assert b'grid-template-areas: "refresh sort limit text"' in stylesheet
-    assert b'grid-template-areas: "refresh refresh text" "sort limit limit"' in stylesheet
-    assert b".item-view-description { max-width: none" in stylesheet
+    assert b".review-day-list" in stylesheet
+    assert b".review-load-more" in stylesheet
 
 
 def test_reader_restores_split_widths_before_first_paint(configured):
@@ -199,8 +333,8 @@ def test_reader_restores_split_widths_before_first_paint(configured):
     initializer = client.get("/static/layout-init.js")
     application = client.get("/static/app.js")
 
-    early_script = b'<script src="/static/layout-init.js?v=0.23.7"></script>'
-    stylesheet = b'<link rel="stylesheet" href="/static/app.css?v=0.23.7">'
+    early_script = b'<script src="/static/layout-init.js?v=0.24.1-final"></script>'
+    stylesheet = b'<link rel="stylesheet" href="/static/app.css?v=0.24.1-final">'
     assert early_script in page.data
     assert page.data.index(early_script) < page.data.index(stylesheet)
     assert b"defer" not in early_script and b"async" not in early_script
@@ -757,7 +891,7 @@ def test_mobile_layers_narrow_pane_controls_and_favicon_are_bounded(configured):
     assert b'class="nav-menu main-menu"' in page.data
     assert b'<span class="toolbar-label">Menu</span>' in page.data
     assert b'class="action-menu scope-actions"' in page.data
-    favicon = b'<link rel="icon" type="image/svg+xml" href="/static/distillfeed-icon.svg?v=0.23.7">'
+    favicon = b'<link rel="icon" type="image/svg+xml" href="/static/distillfeed-icon.svg?v=0.24.1-final">'
     for path in ("/", "/summaries", "/history", "/health", "/notifications", "/costs", "/saved?view=favorites"):
         response = client.get(path)
         assert response.status_code == 200
@@ -834,7 +968,7 @@ def test_settings_contain_ai_source_and_queue_transitions_without_external_subme
 def test_service_worker_revalidates_shell_and_never_caches_api(configured):
     worker = create_app(str(configured.path)).test_client().get("/static/service-worker.js").data
     assert b"distillfeed-v21" in worker
-    assert b"/static/layout-init.js?v=0.23.7" in worker
+    assert b"/static/layout-init.js?v=0.24.1-final" in worker
     assert b"url.pathname.startsWith('/api/')" in worker
     assert b"fetch(event.request, { cache: 'no-cache' })" in worker
     assert b"caches.match(event.request).then(cached => cached || fetch(event.request))" not in worker
@@ -1397,43 +1531,100 @@ def test_all_summaries_page_contains_active_feed_summary(configured):
     assert b"New follow-up" in page.data
     assert b"Rolling view combining" not in page.data
     assert b"A clear overview" not in page.data
-    reader_page = app.test_client().get(f"/?group={group_id}")
+    client = app.test_client()
+    reader_page = client.get(f"/?group={group_id}")
     assert reader_page.status_code == 200
-    assert b"Description</" not in reader_page.data
-    assert b"New description" in reader_page.data
-    assert f'data-summary-item-id="{second_item_id}"'.encode() in reader_page.data
-    assert f'class="summary-locate-item" type="button" data-item-id="{second_item_id}"'.encode() in reader_page.data
-    assert b'id="summary-item-list"' in reader_page.data
-    assert b"follows the visible item-panel order" not in reader_page.data
-    assert b"Articles in item-panel order" not in reader_page.data
-    assert b"<h2>Articles</h2>" in reader_page.data
-    assert b"Thematic overview" in reader_page.data
-    summary_list = reader_page.data.split(b'id="summary-item-list"', 1)[1].split(b"</ul>", 1)[0]
-    assert summary_list.index(b"Older high-score article") < summary_list.index(b"New follow-up")
-    assert summary_list.index(b"New follow-up") < summary_list.index(b"Newer low-score article")
-    assert f'data-summary-score="95"'.encode() in summary_list
-    assert f'data-summary-score="25"'.encode() in summary_list
-    assert reader_page.data.index(b'id="summary-item-list"') < reader_page.data.index(
-        b'class="digest-sections"'
-    )
-    script = app.test_client().get("/static/app.js").data
-    assert b"function syncSummaryOrder()" not in script
-    assert b"syncSummaryOrder();" not in script
-    assert b"itemSearch.value = ''" in script
-    assert b"itemFilter.value = 'all'" in script
-    assert b"button[data-view=\"items\"]" in script
-    assert b"row.focus({ preventScroll: true })" in script
-    assert b"row.scrollIntoView({ behavior: 'smooth', block: 'center' })" in script
-    assert b"rolling view combines" not in reader_page.data
-    stylesheet = app.test_client().get("/static/app.css").data
-    assert b".summary-locate-item" in stylesheet
-    assert b"min-width: max-content" in stylesheet
-    assert b"flex: 0 0 auto" in stylesheet
-    assert b"white-space: nowrap" in stylesheet
+    assert b'id="review-app"' in reader_page.data
+    assert b"New description" not in reader_page.data  # details are lazy
+    details = client.get(f"/api/review/items/{second_item_id}?group_id={group_id}")
+    assert details.status_code == 200
+    detail_payload = details.get_json()
+    assert "New description" in detail_payload["summary_html"]
+    assert "New reason" in detail_payload["rationale_html"]
+    script = client.get("/static/review.js").data
+    assert b"/api/review/days" in script
+    assert b"/api/review/items/" in script
+    assert b"review-source-links" in script
+    state_script = client.get("/static/review-state.js").data
+    assert b"activeDaysRequestId" in state_script
+    stylesheet = client.get("/static/app.css").data
+    assert b".review-source-links" in stylesheet
+    assert b"gap: 12px" in stylesheet
     with connect(configured.database_path) as connection:
         connection.execute("UPDATE feeds SET llm_enabled=0 WHERE id=?", (feed_id,))
     active_page = app.test_client().get("/summaries")
     assert b"New follow-up" in active_page.data  # Stored results remain readable.
     paused_reader = app.test_client().get(f"/?group={group_id}")
-    assert b"New description" in paused_reader.data
-    assert b"New reason" in paused_reader.data
+    assert b'id="review-app"' in paused_reader.data
+    paused_details = app.test_client().get(
+        f"/api/review/items/{second_item_id}?group_id={group_id}"
+    )
+    assert paused_details.status_code == 200
+    assert "New description" in paused_details.get_json()["summary_html"]
+    assert "New reason" in paused_details.get_json()["rationale_html"]
+
+
+def test_group_day_view_preference_is_persisted_inherited_and_rendered(configured):
+    with connect(configured.database_path) as connection:
+        group_id = int(connection.execute(
+            "INSERT INTO groups(title,position,created_at) VALUES('YouTube',0,?)",
+            (utcnow(),),
+        ).lastrowid)
+        feed_id = int(connection.execute(
+            "INSERT INTO feeds(group_id,title,xml_url,created_at) VALUES(?,?,?,?)",
+            (group_id, "Channel", "https://example.test/youtube.xml", utcnow()),
+        ).lastrowid)
+        connection.execute(
+            """INSERT INTO items(feed_id,stable_id,title,published_at,discovered_at)
+               VALUES(?,?,?,?,?)""",
+            (feed_id, "video-1", "A new video", "2026-08-18T08:00:00+00:00", utcnow()),
+        )
+
+    client = create_app(str(configured.path)).test_client()
+    initial = client.get(f"/?group={group_id}")
+    assert initial.status_code == 200
+    csrf = csrf_from(initial)
+    assert b'<meta name="review-display-mode" content="daily">' in initial.data
+    assert b'<option value="daily" selected>Open one day</option>' in initial.data
+
+    invalid = client.patch(
+        f"/api/groups/{group_id}",
+        json={"review_display_mode": "everything-open-ish"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert invalid.status_code == 400
+
+    changed = client.patch(
+        f"/api/groups/{group_id}",
+        json={"review_display_mode": "direct"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert changed.status_code == 200
+    assert changed.get_json()["review_display_mode"] == "direct"
+
+    group_page = client.get(f"/?group={group_id}")
+    feed_page = client.get(f"/?feed={feed_id}")
+    for page in (group_page, feed_page):
+        assert page.status_code == 200
+        assert f'<meta name="review-preference-group-id" content="{group_id}">'.encode() in page.data
+        assert b'<meta name="review-display-mode" content="direct">' in page.data
+        assert b'<option value="direct" selected>Show items directly</option>' in page.data
+
+    group_days = client.get(
+        f"/api/review/days?group_id={group_id}&preset=catch-up"
+    ).get_json()
+    feed_days = client.get(
+        f"/api/review/days?feed_id={feed_id}&preset=catch-up"
+    ).get_json()
+    for payload in (group_days, feed_days):
+        assert payload["scope"]["preference_group_id"] == group_id
+        assert payload["scope"]["review_display_mode"] == "direct"
+
+    with connect(configured.database_path) as connection:
+        mode = connection.execute(
+            "SELECT review_display_mode FROM groups WHERE id=?", (group_id,)
+        ).fetchone()[0]
+    assert mode == "direct"
+    assert 'distillfeedReviewDisplayMode="direct"' in configured.working_opml_path.read_text(
+        encoding="utf-8"
+    )

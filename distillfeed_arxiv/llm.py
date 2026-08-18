@@ -200,14 +200,11 @@ def rerank(
     candidates: list[tuple[Paper, LocalScore]], cfg: dict[str, Any],
     cancel_requested=lambda: False,
 ) -> tuple[dict[str, dict[str, Any]], LLMUsage]:
-    """Rank the configured top candidates in bounded, independently validated calls."""
-    maximum = int(cfg["llm"].get("max_candidates", 100))
-    selected = candidates[:maximum]
+    """Rank every locally eligible candidate in bounded, validated calls."""
+    selected = candidates
     if not selected:
         return {}, LLMUsage()
-    batch_size = max(1, min(
-        int(cfg["llm"].get("ranking_batch_size", 20)), maximum,
-    ))
+    batch_size = max(1, int(cfg["llm"].get("ranking_batch_size", 20)))
     client = _client(cfg)
     results: dict[str, dict[str, Any]] = {}
     usage = LLMUsage()
@@ -274,7 +271,9 @@ def daily_digest(
         f"Write a concise daily arXiv digest in {language}. Summarize the complete supplied "
         "selected, reranked papers, identify their main themes, and emphasize papers closest to the "
         "reader's machine-learning and symbolic-reasoning interests. Do not invent claims. "
-        "Use a short overview and up to five useful thematic sections. Return JSON only."
+        "Use Markdown inside the overview and section-body strings: concise paragraphs, emphasis "
+        "where useful, and one '-' bullet per physical line. Never compress multiple bullets onto "
+        "one line. Use a short overview and up to five useful thematic sections. Return JSON only."
     )
     client = _client(cfg)
 

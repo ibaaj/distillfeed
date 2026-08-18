@@ -221,12 +221,20 @@ def _store_paper(connection: Any, paper: Paper, feed_id: int) -> tuple[int, bool
         )
         connection.execute(
             """UPDATE distillfeed_arxiv_papers SET version=?,categories_json=?,primary_category=?,
-               pdf_url=?,announce_type=?,source=?,
-               evaluation_status=CASE WHEN ? THEN 'pending' ELSE evaluation_status END,
-               evaluated_at=CASE WHEN ? THEN NULL ELSE evaluated_at END WHERE item_id=?""",
+               pdf_url=?,announce_type=?,source=? WHERE item_id=?""",
             (paper.version, json.dumps(paper.categories, ensure_ascii=False), paper.primary_category,
-             paper.pdf_link, paper.announce_type, paper.source, int(revised), int(revised), item_id),
+             paper.pdf_link, paper.announce_type, paper.source, item_id),
         )
+        if revised:
+            # A revised paper is new evidence. Never display or reuse its previous
+            # model result while it is waiting to be ranked again.
+            connection.execute(
+                """UPDATE distillfeed_arxiv_papers
+                      SET local_score=NULL,llm_score=NULL,final_score=NULL,decision=NULL,why=NULL,
+                          tags_json='[]',local_reasons_json='[]',evaluation_status='pending',evaluated_at=NULL
+                    WHERE item_id=?""",
+                (item_id,),
+            )
         return item_id, False, revised
     item_id = int(connection.execute(
         """INSERT INTO items(feed_id,stable_id,title,url,author,published_at,discovered_at,
@@ -243,6 +251,23 @@ def _store_paper(connection: Any, paper: Paper, feed_id: int) -> tuple[int, bool
     return item_id, True, True
 
 
+def _paper_from_row(row: Any) -> Paper:
+    published = datetime.fromisoformat(row["published_at"]) if row["published_at"] else None
+    return Paper(
+        arxiv_id=row["arxiv_id"], version=row["version"], title=row["title"],
+        abstract=row["description_text"],
+        authors=[value.strip() for value in str(row["author"] or "").split(",") if value.strip()],
+        categories=json.loads(row["categories_json"]), primary_category=row["primary_category"],
+        link=row["url"], pdf_link=row["pdf_url"], published=published, updated=published,
+        source=row["source"], announce_type=row["announce_type"],
+    )
+
+
+def _paper_day(paper: Paper) -> str:
+    stamp = paper.published or paper.updated
+    return stamp.astimezone(UTC).date().isoformat() if stamp else "undated"
+
+
 def _pending(connection: Any, feed_ids: list[int]) -> list[tuple[int, Paper]]:
     marks = ",".join("?" for _ in feed_ids)
     rows = connection.execute(
@@ -251,71 +276,122 @@ def _pending(connection: Any, feed_ids: list[int]) -> list[tuple[int, Paper]]:
             WHERE ap.evaluation_status='pending' AND i.feed_id IN ({marks})
             ORDER BY COALESCE(i.published_at,i.discovered_at),i.id""", feed_ids,
     ).fetchall()
-    result: list[tuple[int, Paper]] = []
+    return [(int(row["item_id"]), _paper_from_row(row)) for row in rows]
+
+
+def _stored_day_evaluations(
+    connection: Any, feed_ids: list[int], day: str, broad_threshold: int,
+) -> list[tuple[int, Paper, LocalScore, Decision]]:
+    """Load already AI-ranked papers for one day without re-querying the model."""
+    marks = ",".join("?" for _ in feed_ids)
+    rows = connection.execute(
+        f"""SELECT ap.*,i.feed_id,i.title,i.url,i.author,i.published_at,i.description_text
+              FROM distillfeed_arxiv_papers ap JOIN items i ON i.id=ap.item_id
+             WHERE i.feed_id IN ({marks})
+               AND substr(COALESCE(i.published_at,i.discovered_at),1,10)=?
+               AND ap.evaluation_status='complete'
+               AND ap.llm_score IS NOT NULL
+               AND ap.local_score>=?
+             ORDER BY ap.llm_score DESC,ap.local_score DESC,i.id""",
+        [*feed_ids, day, broad_threshold],
+    ).fetchall()
+    result: list[tuple[int, Paper, LocalScore, Decision]] = []
     for row in rows:
-        published = datetime.fromisoformat(row["published_at"]) if row["published_at"] else None
-        result.append((int(row["item_id"]), Paper(
-            arxiv_id=row["arxiv_id"], version=row["version"], title=row["title"],
-            abstract=row["description_text"], authors=[value.strip() for value in str(row["author"] or "").split(",") if value.strip()],
-            categories=json.loads(row["categories_json"]), primary_category=row["primary_category"],
-            link=row["url"], pdf_link=row["pdf_url"], published=published, updated=published,
-            source=row["source"], announce_type=row["announce_type"],
-        )))
+        reasons = json.loads(row["local_reasons_json"] or "[]")
+        tags = json.loads(row["tags_json"] or "[]")
+        local = LocalScore(score=int(row["local_score"]), reasons=[str(value) for value in reasons])
+        decision = Decision(
+            local_score=int(row["local_score"]), llm_score=int(row["llm_score"]),
+            final_score=float(row["final_score"] if row["final_score"] is not None else row["local_score"]),
+            decision=str(row["decision"] or "drop"), why=str(row["why"] or ""),
+            tags=[str(value) for value in tags], local_reasons=[str(value) for value in reasons],
+        )
+        result.append((int(row["item_id"]), _paper_from_row(row), local, decision))
     return result
 
 
-def _announcement_key(pending: list[tuple[int, Paper]]) -> str | None:
-    """Return the arXiv announcement day represented by the pending set."""
-    dates = [
-        (paper.published or paper.updated).astimezone(UTC).date().isoformat()
-        for _, paper in pending if paper.published or paper.updated
-    ]
-    return max(dates) if dates else None
+def _group_scored_by_day(
+    scored: list[tuple[int, Paper, LocalScore]],
+) -> dict[str, list[tuple[int, Paper, LocalScore]]]:
+    grouped: dict[str, list[tuple[int, Paper, LocalScore]]] = {}
+    for entry in scored:
+        grouped.setdefault(_paper_day(entry[1]), []).append(entry)
+    return grouped
+
+
+def _dedicated_digest_days(connection: Any, group_id: int, feed_ids: list[int]) -> set[str]:
+    """Return days that already have a successful single-day arXiv summary.
+
+    Older releases could write one summary containing several announcement days.
+    Such a summary is intentionally *not* considered a dedicated daily digest so
+    a one-time manual recovery can rebuild those dates independently.
+    """
+    marks = ",".join("?" for _ in feed_ids)
+    rows = connection.execute(
+        f"""SELECT s.id,
+                    MIN(substr(COALESCE(i.published_at,i.discovered_at),1,10)) AS first_day,
+                    MAX(substr(COALESCE(i.published_at,i.discovered_at),1,10)) AS last_day
+               FROM summaries s
+               JOIN llm_runs lr ON lr.id=s.llm_run_id
+               JOIN summary_items si ON si.summary_id=s.id
+               JOIN items i ON i.id=si.item_id
+              WHERE lr.status='success'
+                AND lr.prompt_version LIKE 'distillfeed-arxiv-%'
+                AND CASE WHEN s.scope_id IS NOT NULL THEN s.scope_kind
+                         WHEN s.scope_feed_id IS NOT NULL THEN 'feed' ELSE 'group' END='group'
+                AND COALESCE(s.scope_id,s.group_id)=?
+                AND i.feed_id IN ({marks})
+              GROUP BY s.id
+             HAVING first_day=last_day""",
+        [group_id, *feed_ids],
+    ).fetchall()
+    return {str(row["first_day"]) for row in rows if row["first_day"]}
+
+
+def _missing_daily_digest_days(
+    connection: Any, group_id: int, feed_ids: list[int], broad_threshold: int,
+) -> list[str]:
+    """Find historical AI-scored days that never received a true daily digest."""
+    dedicated = _dedicated_digest_days(connection, group_id, feed_ids)
+    marks = ",".join("?" for _ in feed_ids)
+    rows = connection.execute(
+        f"""SELECT DISTINCT substr(COALESCE(i.published_at,i.discovered_at),1,10) AS digest_day
+              FROM distillfeed_arxiv_papers ap
+              JOIN items i ON i.id=ap.item_id
+             WHERE i.feed_id IN ({marks})
+               AND ap.evaluation_status='complete'
+               AND ap.llm_score IS NOT NULL
+               AND ap.local_score>=?
+             ORDER BY digest_day""",
+        [*feed_ids, broad_threshold],
+    ).fetchall()
+    return [str(row["digest_day"]) for row in rows if row["digest_day"] and str(row["digest_day"]) not in dedicated]
 
 
 def _evidence_fingerprint(
-    connection: Any,
-    pending: list[tuple[int, Paper]],
+    evidence: list[tuple[int, Paper]],
     cfg: dict[str, Any],
     categories: list[str],
     language: str,
 ) -> str:
-    """Identify the evidence and policy for one digest revision.
-
-    The announcement date is useful presentation metadata, but it is not an
-    idempotency key: categories can recover and revisions can arrive later on
-    the same date. Include every retained paper from the represented date as
-    well as every pending paper, so later evidence necessarily creates a new
-    fingerprint.
-    """
-    announcement = _announcement_key(pending)
-    papers = {
-        (str(paper.arxiv_id), str(paper.version or ""))
-        for _, paper in pending
-    }
-    if announcement:
-        papers.update(
-            (str(row["arxiv_id"]), str(row["version"] or ""))
-            for row in connection.execute(
-                """SELECT ap.arxiv_id,ap.version
-                     FROM distillfeed_arxiv_papers ap
-                     JOIN items i ON i.id=ap.item_id
-                    WHERE substr(COALESCE(i.published_at,i.discovered_at),1,10)=?
-                      AND ap.evaluation_status IN ('pending','complete')""",
-                (announcement,),
-            ).fetchall()
-        )
+    """Identify one day's paper evidence and ranking/digest policy."""
+    days = {_paper_day(paper) for _, paper in evidence}
+    if len(days) > 1:
+        raise ValueError("A daily arXiv fingerprint cannot span multiple publication days")
     llm = cfg["llm"]
     material = {
-        "announcement": announcement,
-        "papers": [list(value) for value in sorted(papers)],
+        "announcement": next(iter(days), None),
+        "papers": sorted(
+            [str(paper.arxiv_id), str(paper.version or "")]
+            for _, paper in evidence
+        ),
         "categories": sorted(str(value) for value in categories),
         "language": str(language),
         "filters": cfg["filters"],
         "llm": {
             key: llm.get(key)
             for key in (
-                "model", "max_candidates", "ranking_batch_size",
+                "model", "ranking_batch_size",
                 "estimated_output_tokens_per_paper", "max_digest_input_chars",
                 "system_prompt",
             )
@@ -327,6 +403,28 @@ def _evidence_fingerprint(
             material, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()
+
+
+def _requeue_ai_eligible_without_score(connection: Any, cfg: dict[str, Any]) -> int:
+    """Restore the invariant that every locally eligible paper receives AI scoring.
+
+    Releases through 0.23.7 could mark above-threshold papers ``screened_out``
+    solely because the announcement exceeded ``llm.max_candidates``. Those rows
+    were then invisible to retry because only ``pending`` rows are evaluated.
+    Requeue terminal rows whose stored local score meets the current AI threshold.
+    """
+    threshold = int(cfg["filters"].get("broad_candidate_threshold", 0))
+    cursor = connection.execute(
+        """UPDATE distillfeed_arxiv_papers
+              SET llm_score=NULL,final_score=NULL,decision=NULL,why=NULL,tags_json='[]',
+                  evaluation_status='pending',evaluated_at=NULL
+            WHERE llm_score IS NULL
+              AND local_score IS NOT NULL
+              AND local_score>=?
+              AND evaluation_status IN ('screened_out','complete')""",
+        (threshold,),
+    )
+    return max(int(cursor.rowcount), 0)
 
 
 def _model_blocker(cfg: dict[str, Any]) -> tuple[str, str] | None:
@@ -377,9 +475,19 @@ def _complete_run(
         (run_id, group_id, group_id, PROMPT_VERSION, str(digest.get("overview", ""))[:8000],
          json.dumps(digest.get("sections", []), ensure_ascii=False), utcnow()),
     ).lastrowid)
-    ranked = sorted(evaluated, key=lambda entry: (entry[3].decision != "keep", -(entry[3].llm_score or -1), -entry[3].local_score, -entry[3].final_score))
+    ranked = sorted(
+        evaluated,
+        key=lambda entry: (
+            entry[3].decision != "keep",
+            -(entry[3].llm_score if entry[3].llm_score is not None else -1),
+            -entry[3].local_score,
+            -entry[3].final_score,
+        ),
+    )
     for rank, (item_id, paper, local, decision) in enumerate(ranked, 1):
-        importance = decision.llm_score if decision.llm_score is not None else max(0, min(100, decision.local_score * 5))
+        if decision.llm_score is None:
+            raise RuntimeError("Cannot publish an arXiv daily digest item without an AI score")
+        importance = int(decision.llm_score)
         connection.execute(
             """INSERT INTO summary_items(summary_id,item_id,included,rank,importance,description,
                    justification,story_cluster) VALUES(?,?,?,?,?,?,?,?)""",
@@ -432,6 +540,12 @@ class ArxivDigestPlugin:
     def initialize(self, connection: Any, main_config: Any) -> None:
         cfg = load_plugin_config(main_config)
         connection.executescript(SCHEMA)
+        restored = _requeue_ai_eligible_without_score(connection, cfg)
+        if restored:
+            LOGGER.info(
+                "Requeued %d arXiv paper(s) that were locally eligible but had no AI score",
+                restored,
+            )
         connection.execute(
             """INSERT OR IGNORE INTO distillfeed_arxiv_seen(
                    arxiv_id,version,first_seen_at,last_seen_at,local_score,selected
@@ -454,6 +568,15 @@ class ArxivDigestPlugin:
         advance_watermark: bool,
         allow_model: bool = True,
     ) -> dict[str, Any]:
+        """Process all remaining arXiv work while preserving one digest per day.
+
+        The local threshold defines AI eligibility. ``ranking_batch_size`` only
+        bounds provider requests; it never truncates the day's eligible set.
+        Historical terminal rows that should have received an AI score are
+        requeued during plugin initialization. In addition, a one-time recovery
+        creates a dedicated daily digest for older AI-scored days that were
+        previously merged into a multi-day summary.
+        """
         created_item_ids = set(int(value) for value in stats.pop("_created_item_ids", []))
         if allow_model:
             stats["retrieval_degraded"] = (
@@ -468,80 +591,78 @@ class ArxivDigestPlugin:
         if getattr(context, "cancel_requested", lambda: False)():
             stats["status"] = "cancelled"
             return stats
-        pending = _pending(context.connection, [feeds[category] for category in categories])
-        if not pending:
+
+        feed_ids = [feeds[category] for category in categories]
+        pending = _pending(context.connection, feed_ids)
+        broad = int(cfg["filters"].get("broad_candidate_threshold", 0))
+        scored = [(item_id, paper, compute_local_score(paper, cfg)) for item_id, paper in pending]
+        shortlisted = sorted(
+            [entry for entry in scored if entry[2].score >= broad],
+            key=lambda entry: (_paper_day(entry[1]), -entry[2].score, entry[0]),
+        )
+        shortlisted_ids = {item_id for item_id, _, _ in shortlisted}
+        retained_ids = {item_id for item_id, _, _ in scored}
+        if scored:
+            with transaction(context.connection, immediate=True):
+                for item_id, paper, local in scored:
+                    selected = item_id in shortlisted_ids
+                    _record_seen(context.connection, paper, local_score=local.score, selected=selected)
+                    if selected:
+                        context.connection.execute(
+                            """UPDATE distillfeed_arxiv_papers
+                                  SET local_score=?,local_reasons_json=?,evaluation_status='pending'
+                                WHERE item_id=?""",
+                            (local.score, json.dumps(local.reasons, ensure_ascii=False), item_id),
+                        )
+                        continue
+                    context.connection.execute(
+                        """UPDATE distillfeed_arxiv_papers SET local_score=?,local_reasons_json=?,
+                           llm_score=NULL,final_score=NULL,decision='drop',
+                           why='Screened out below the local AI threshold',tags_json='[]',
+                           evaluation_status='screened_out',evaluated_at=? WHERE item_id=?""",
+                        (local.score, json.dumps(local.reasons, ensure_ascii=False), utcnow(), item_id),
+                    )
+
+        stats["screened_locally"] = len(scored) - len(shortlisted)
+        stats["selected_for_llm"] = len(shortlisted)
+        stats["new_items"] = len(created_item_ids.intersection(retained_ids))
+
+        pending_by_day = _group_scored_by_day(shortlisted)
+        missing_digest_days = _missing_daily_digest_days(
+            context.connection, group_id, feed_ids, broad,
+        )
+        work_days = sorted(set(pending_by_day).union(missing_digest_days))
+        stats["backlog_days"] = len(work_days)
+        stats["announcements"] = work_days
+        stats["missing_daily_digests"] = len(missing_digest_days)
+
+        if not work_days:
             if advance_watermark and not _retrieval_degraded(stats):
                 _set_state(context.connection, "last_complete_at", utcnow())
             stats["status"] = "partial" if _retrieval_degraded(stats) else (
                 "unchanged" if stats.get("new_items", 0) == 0 else "success"
             )
-            if stats["status"] == "unchanged":
-                stats["message"] = (
-                    "The daily arXiv digest is already up to date"
-                    if _state(context.connection, "last_digest_fingerprint")
-                    else "No new arXiv papers are waiting for a daily digest"
-                )
-            return stats
-        scored = [(item_id, paper, compute_local_score(paper, cfg)) for item_id, paper in pending]
-        broad = int(cfg["filters"].get("broad_candidate_threshold", 0))
-        maximum = int(cfg["llm"].get("max_candidates", 100))
-        shortlisted = sorted(
-            [entry for entry in scored if entry[2].score >= broad],
-            key=lambda entry: entry[2].score, reverse=True,
-        )[:maximum]
-        shortlisted_ids = {item_id for item_id, _, _ in shortlisted}
-        retained_ids = {item_id for item_id, _, _ in scored}
-        with transaction(context.connection, immediate=True):
-            for item_id, paper, local in scored:
-                selected = item_id in shortlisted_ids
-                _record_seen(context.connection, paper, local_score=local.score, selected=selected)
-                if selected:
-                    context.connection.execute(
-                        """UPDATE distillfeed_arxiv_papers SET local_score=?,local_reasons_json=?
-                           WHERE item_id=?""",
-                        (local.score, json.dumps(local.reasons, ensure_ascii=False), item_id),
-                    )
-                    continue
-                context.connection.execute(
-                    """UPDATE distillfeed_arxiv_papers SET local_score=?,local_reasons_json=?,
-                       decision='drop',why='Screened out before AI reranking',
-                       evaluation_status='screened_out',evaluated_at=? WHERE item_id=?""",
-                    (local.score, json.dumps(local.reasons, ensure_ascii=False), utcnow(), item_id),
-                )
-        stats["screened_locally"] = len(scored) - len(shortlisted)
-        stats["selected_for_llm"] = len(shortlisted)
-        stats["new_items"] = len(created_item_ids.intersection(retained_ids))
-        scored = shortlisted
-        if not scored:
-            if advance_watermark and not _retrieval_degraded(stats):
-                _set_state(context.connection, "last_complete_at", utcnow())
-            stats["status"] = "partial" if _retrieval_degraded(stats) else "success"
             stats["evaluated_items"] = 0
             stats["kept_items"] = 0
+            stats["daily_digests"] = 0
+            if stats["status"] == "unchanged":
+                stats["message"] = "The daily arXiv digest is already up to date"
             return stats
-        announcement_key = _announcement_key([(item_id, paper) for item_id, paper, _ in scored])
-        language = str(context.config.get("app", "summary_language", "English"))
-        evidence_fingerprint = _evidence_fingerprint(
-            context.connection,
-            [(item_id, paper) for item_id, paper, _ in scored],
-            cfg,
-            categories,
-            language,
-        )
-        stats["evidence_fingerprint"] = evidence_fingerprint
-        if announcement_key:
-            stats["announcement"] = announcement_key
-            _set_state(context.connection, "pending_announcement", announcement_key)
-        _set_state(context.connection, "pending_evidence_fingerprint", evidence_fingerprint)
+
+        latest_day = work_days[-1]
+        stats["announcement"] = latest_day
+        _set_state(context.connection, "pending_announcement", latest_day)
+
         if not allow_model:
             stats["status"] = "waiting-for-digest"
             stats["evaluated_items"] = 0
             stats["kept_items"] = 0
+            stats["daily_digests"] = 0
+            stats["message"] = (
+                f"{len(work_days)} arXiv day{'s are' if len(work_days) != 1 else ' is'} waiting for AI completion"
+            )
             return stats
-        if _state(context.connection, "last_digest_fingerprint") == evidence_fingerprint:
-            stats["status"] = "unchanged"
-            stats["message"] = "A digest for this exact arXiv evidence and policy already exists"
-            return stats
+
         blocker = _model_blocker(cfg)
         if blocker:
             reason, message = blocker
@@ -555,86 +676,167 @@ class ArxivDigestPlugin:
         if getattr(context, "cancel_requested", lambda: False)():
             stats["status"] = "cancelled"
             return stats
+
         _set_state(context.connection, "blocked_reason", "")
         _set_state(context.connection, "blocked_message", "")
-        run_id = _start_run(
-            context.connection,
-            [item_id for item_id, _, _ in scored],
-            cfg,
-            evidence_fingerprint,
-        )
-        try:
-            candidates = [(paper, local) for _, paper, local in scored]
-            ranked_count = len(candidates)
-            batch_size = max(1, int(cfg["llm"].get("ranking_batch_size", 20)))
-            stats["llm_calls"] = (
-                ((ranked_count + batch_size - 1) // batch_size) if ranked_count else 0
-            ) + 1  # the daily digest call
-            reranked, rerank_usage = rerank(
-                candidates, cfg,
-                cancel_requested=getattr(context, "cancel_requested", lambda: False),
-            )
-            evaluated: list[tuple[int, Paper, LocalScore, Decision]] = []
-            for item_id, paper, local in scored:
-                evaluated.append((item_id, paper, local, decide(local, reranked.get(paper.arxiv_id), cfg)))
-            digest_input = [entry for entry in evaluated if entry[3].decision == "keep"]
-            if not digest_input:
-                digest_input = evaluated[: min(25, len(evaluated))]
+        language = str(context.config.get("app", "summary_language", "English"))
+        batch_size = max(1, int(cfg["llm"].get("ranking_batch_size", 20)))
+        total_evaluated = 0
+        total_kept = 0
+        total_calls = 0
+        run_ids: list[int] = []
+        completed_days: list[str] = []
+        notification_results: list[dict[str, Any]] = []
+
+        for day in work_days:
             if getattr(context, "cancel_requested", lambda: False)():
-                raise InterruptedError("arXiv digest update stopped before digest composition")
-            digest, digest_usage = daily_digest(
-                [(paper, local, decision) for _, paper, local, decision in digest_input], cfg,
-                language,
+                stats.update({
+                    "status": "cancelled", "cancelled": True,
+                    "message": "The remaining arXiv days are still waiting for a later update",
+                })
+                break
+
+            day_scored = pending_by_day.get(day, [])
+            existing = _stored_day_evaluations(context.connection, feed_ids, day, broad)
+            evidence_map: dict[int, tuple[int, Paper]] = {
+                item_id: (item_id, paper) for item_id, paper, _local, _decision in existing
+            }
+            evidence_map.update({item_id: (item_id, paper) for item_id, paper, _local in day_scored})
+            evidence = list(evidence_map.values())
+            if not evidence:
+                # Defensive: a day can disappear only if rows were concurrently
+                # removed. The job lock should make this unreachable, but do not
+                # create an empty provider request if it ever occurs.
+                continue
+            evidence_fingerprint = _evidence_fingerprint(evidence, cfg, categories, language)
+            _set_state(context.connection, "pending_announcement", day)
+            _set_state(context.connection, "pending_evidence_fingerprint", evidence_fingerprint)
+            run_id = _start_run(
+                context.connection,
+                [item_id for item_id, _, _ in day_scored],
+                cfg, evidence_fingerprint,
             )
-            if getattr(context, "cancel_requested", lambda: False)():
-                raise InterruptedError("arXiv digest update stopped after digest composition")
-            with transaction(context.connection, immediate=True):
-                _complete_run(context.connection, run_id, group_id, evaluated, digest, rerank_usage.plus(digest_usage))
-                # A degraded API backfill must retry its old window next time;
-                # advancing here could permanently skip papers absent from RSS.
-                if advance_watermark and not _retrieval_degraded(stats):
-                    _set_state(context.connection, "last_complete_at", utcnow())
-                if announcement_key:
-                    _set_state(context.connection, "last_digest_announcement", announcement_key)
-                    _set_state(context.connection, "pending_announcement", "")
-                _set_state(context.connection, "last_digest_fingerprint", evidence_fingerprint)
-                _set_state(context.connection, "pending_evidence_fingerprint", "")
-            stats["summary_run_id"] = run_id
-            stats["evaluated_items"] = len(evaluated)
-            stats["kept_items"] = sum(decision.decision == "keep" for _, _, _, decision in evaluated)
-            if _retrieval_degraded(stats):
-                stats["status"] = "partial"
-            else:
-                stats["status"] = "success"
+            run_ids.append(run_id)
+            rerank_usage = LLMUsage()
             try:
-                stats["arxiv_notifications"] = deliver_arxiv_pushes(
-                    context.connection, cfg, [item_id for item_id, _, _, _ in evaluated], automatic=context.automatic,
+                newly_evaluated: list[tuple[int, Paper, LocalScore, Decision]] = []
+                if day_scored:
+                    candidates = [(paper, local) for _, paper, local in day_scored]
+                    total_calls += (len(candidates) + batch_size - 1) // batch_size
+                    reranked, rerank_usage = rerank(
+                        candidates, cfg,
+                        cancel_requested=getattr(context, "cancel_requested", lambda: False),
+                    )
+                    expected_ids = {paper.arxiv_id for _, paper, _ in day_scored}
+                    if set(reranked) != expected_ids:
+                        raise RuntimeError("arXiv reranker did not return every pending paper exactly once")
+                    newly_evaluated = [
+                        (item_id, paper, local, decide(local, reranked[paper.arxiv_id], cfg))
+                        for item_id, paper, local in day_scored
+                    ]
+                    if any(decision.llm_score is None for _, _, _, decision in newly_evaluated):
+                        raise RuntimeError("A locally eligible arXiv paper completed without an AI score")
+
+                merged: dict[int, tuple[int, Paper, LocalScore, Decision]] = {
+                    entry[0]: entry for entry in existing
+                }
+                merged.update({entry[0]: entry for entry in newly_evaluated})
+                day_evaluated = sorted(
+                    merged.values(),
+                    key=lambda entry: (
+                        entry[3].decision != "keep",
+                        -(entry[3].llm_score if entry[3].llm_score is not None else -1),
+                        -entry[3].local_score,
+                        entry[0],
+                    ),
                 )
+                if not day_evaluated:
+                    raise RuntimeError(f"No AI-scored arXiv papers are available for {day}")
+                digest_input = [entry for entry in day_evaluated if entry[3].decision == "keep"]
+                if not digest_input:
+                    digest_input = day_evaluated[: min(25, len(day_evaluated))]
+                if getattr(context, "cancel_requested", lambda: False)():
+                    raise InterruptedError("arXiv update stopped before daily digest composition")
+                total_calls += 1
+                digest, digest_usage = daily_digest(
+                    [(paper, local, decision) for _, paper, local, decision in digest_input],
+                    cfg, language,
+                )
+                if getattr(context, "cancel_requested", lambda: False)():
+                    raise InterruptedError("arXiv update stopped after daily digest composition")
+                with transaction(context.connection, immediate=True):
+                    _complete_run(
+                        context.connection, run_id, group_id, day_evaluated, digest,
+                        rerank_usage.plus(digest_usage),
+                    )
+                    _set_state(context.connection, "last_digest_announcement", day)
+                    _set_state(context.connection, "last_digest_fingerprint", evidence_fingerprint)
+                    _set_state(context.connection, "pending_announcement", "")
+                    _set_state(context.connection, "pending_evidence_fingerprint", "")
+                completed_days.append(day)
+                total_evaluated += len(newly_evaluated)
+                total_kept += sum(
+                    decision.decision == "keep"
+                    for _, _, _, decision in newly_evaluated
+                )
+                if newly_evaluated:
+                    try:
+                        notification_results.append(deliver_arxiv_pushes(
+                            context.connection, cfg,
+                            [item_id for item_id, _, _, _ in newly_evaluated],
+                            automatic=context.automatic,
+                        ))
+                    except Exception as exc:
+                        LOGGER.exception("arXiv ntfy device-alert processing failed")
+                        notification_results.append({"status": "failed", "error": str(exc)[:2000]})
+            except InterruptedError as exc:
+                context.connection.execute(
+                    "UPDATE llm_runs SET completed_at=?,status='cancelled',error=? WHERE id=?",
+                    (utcnow(), str(exc)[:2000], run_id),
+                )
+                stats.update({
+                    "status": "cancelled", "cancelled": True,
+                    "message": "The remaining arXiv days are still waiting for a later update",
+                })
+                break
             except Exception as exc:
-                LOGGER.exception("arXiv ntfy device-alert processing failed")
-                stats["arxiv_notifications"] = {"status": "failed", "error": str(exc)[:2000]}
-        except InterruptedError as exc:
-            context.connection.execute(
-                "UPDATE llm_runs SET completed_at=?,status='cancelled',error=? WHERE id=?",
-                (utcnow(), str(exc)[:2000], run_id),
-            )
-            stats["status"] = "cancelled"
-            stats["cancelled"] = True
-            stats["message"] = "The arXiv announcement remains waiting for a later digest"
-        except Exception as exc:
-            message = _model_error(exc, cfg)
-            context.connection.execute(
-                "UPDATE llm_runs SET completed_at=?,status='failed',error=? WHERE id=?",
-                (utcnow(), message, run_id),
-            )
-            stats["attempted"] = int(stats.get("attempted", 0)) + 1
-            stats["failed"] = int(stats.get("failed", 0)) + 1
-            stats["status"] = "llm-failed"
-            stats["llm_error"] = message
+                message = _model_error(exc, cfg)
+                context.connection.execute(
+                    "UPDATE llm_runs SET completed_at=?,status='failed',error=? WHERE id=?",
+                    (utcnow(), message, run_id),
+                )
+                stats["attempted"] = int(stats.get("attempted", 0)) + 1
+                stats["failed"] = int(stats.get("failed", 0)) + 1
+                stats["status"] = "llm-failed"
+                stats["llm_error"] = message
+                stats["failed_announcement"] = day
+                break
+
+        stats["llm_calls"] = total_calls
+        stats["summary_run_ids"] = run_ids
+        if run_ids:
+            stats["summary_run_id"] = run_ids[-1]
+        stats["evaluated_items"] = total_evaluated
+        stats["kept_items"] = total_kept
+        stats["daily_digests"] = len(completed_days)
+        stats["completed_announcements"] = completed_days
+        if notification_results:
+            stats["arxiv_notifications"] = notification_results[-1]
+            stats["arxiv_notification_runs"] = notification_results
+
+        if stats.get("status") in {"cancelled", "llm-failed"}:
+            return stats
+        if advance_watermark and not _retrieval_degraded(stats):
+            _set_state(context.connection, "last_complete_at", utcnow())
+        stats["status"] = "partial" if _retrieval_degraded(stats) else "success"
+        stats["message"] = (
+            f"Completed {len(completed_days)} arXiv daily update"
+            f"{'s' if len(completed_days) != 1 else ''}"
+        )
         return stats
 
     def summarize(self, context: Any) -> dict[str, Any]:
-        """Create one combined digest for a new daily arXiv announcement."""
+        """Complete every waiting arXiv day as an independent daily digest."""
         cfg = load_plugin_config(context.config)
         group_id, feeds = _ensure_sources(context.connection, cfg)
         selected = _selected_categories(context, group_id, feeds)
@@ -759,9 +961,20 @@ class ArxivDigestPlugin:
             tags = json.loads(row["tags_json"] or "[]")
             reasons = json.loads(row["local_reasons_json"] or "[]")
             llm_score = row["llm_score"]
-            display_score = int(llm_score) if llm_score is not None else max(-1, min(100, int(row["local_score"] or -1) * 5))
+            # "AI relevance" must mean an actual model score.  Older reader
+            # decoration mapped local_score * 5 into the same numeric channel,
+            # which interleaved papers that had never been AI-ranked with real
+            # AI results.  Keep local score as a secondary ordering signal only.
+            display_score = int(llm_score) if llm_score is not None else None
+            ai_display: int | str
+            if llm_score is not None:
+                ai_display = int(llm_score)
+            elif row["evaluation_status"] == "screened_out":
+                ai_display = "not sent"
+            else:
+                ai_display = "pending"
             score_parts = [f"<span><strong>Local</strong> {escape(row['local_score'] if row['local_score'] is not None else 'pending')}</span>"]
-            score_parts.append(f"<span><strong>AI</strong> {escape(llm_score if llm_score is not None else 'pending')}</span>")
+            score_parts.append(f"<span><strong>AI</strong> {escape(ai_display)}</span>")
             final_display = f"{float(row['final_score']):.1f}" if row["final_score"] is not None else "pending"
             score_parts.append(f"<span><strong>Final</strong> {escape(final_display)}</span>")
             score_parts.append(f"<span><strong>Decision</strong> {escape(row['decision'] or 'pending')}</span>")
@@ -780,6 +993,7 @@ class ArxivDigestPlugin:
                 f"</div>"
             )
             item["display_relevance"] = display_score
+            item["display_local_relevance"] = int(row["local_score"]) if row["local_score"] is not None else None
 
 
 plugin = ArxivDigestPlugin()

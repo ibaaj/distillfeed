@@ -358,7 +358,7 @@ def test_legacy_entry_point_switch_migrates_to_the_named_checkbox(tmp_path):
     assert config.get("plugins", "arxiv_digest_enabled") is True
 
 
-def test_large_announcement_shortlists_once_and_repeat_is_model_free(configured, monkeypatch):
+def test_large_announcement_scores_every_locally_eligible_paper_and_repeat_is_model_free(configured, monkeypatch):
     connection = connect(configured.database_path)
     plugin = ArxivDigestPlugin()
     plugin.initialize(connection, configured)
@@ -371,7 +371,7 @@ def test_large_announcement_shortlists_once_and_repeat_is_model_free(configured,
 
     def rank(candidates, cfg, **kwargs):
         calls["rank"] += 1
-        assert len(candidates) == 100
+        assert len(candidates) == 120
         return ({
             candidate.arxiv_id: {
                 "score": 90, "decision": "keep", "why": "Configured topic match", "tags": [],
@@ -381,7 +381,7 @@ def test_large_announcement_shortlists_once_and_repeat_is_model_free(configured,
 
     def digest(papers, cfg, language):
         calls["digest"] += 1
-        assert len(papers) == 100
+        assert len(papers) == 120
         return ({"overview": "Focused digest", "sections": []}, LLMUsage())
 
     monkeypatch.setattr(plugin_module, "rerank", rank)
@@ -389,8 +389,8 @@ def test_large_announcement_shortlists_once_and_repeat_is_model_free(configured,
     monkeypatch.setattr(plugin_module, "deliver_arxiv_pushes", lambda *args, **kwargs: {"status": "disabled"})
     first = plugin.refresh(context(configured, connection))
     assert first["fetched_items"] == 120
-    assert first["selected_for_llm"] == 100
-    assert first["screened_locally"] == 20
+    assert first["selected_for_llm"] == 120
+    assert first["screened_locally"] == 0
     assert first["new_items"] == 120
     assert first["status"] == "waiting-for-digest"
     assert calls == {"rank": 0, "digest": 0}
@@ -400,17 +400,17 @@ def test_large_announcement_shortlists_once_and_repeat_is_model_free(configured,
             """SELECT evaluation_status,COUNT(*) AS count
                  FROM distillfeed_arxiv_papers GROUP BY evaluation_status"""
         ).fetchall()
-    } == {"pending": 100, "screened_out": 20}
+    } == {"pending": 120}
     digested = plugin.summarize(context(configured, connection))
     assert digested["status"] == "success"
     assert calls == {"rank": 1, "digest": 1}
     assert connection.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 120
     assert connection.execute(
         "SELECT COUNT(*) FROM distillfeed_arxiv_papers WHERE evaluation_status='screened_out'"
-    ).fetchone()[0] == 20
+    ).fetchone()[0] == 0
     assert connection.execute(
-        "SELECT COUNT(*) FROM distillfeed_arxiv_papers WHERE evaluation_status='complete'"
-    ).fetchone()[0] == 100
+        "SELECT COUNT(*) FROM distillfeed_arxiv_papers WHERE evaluation_status='complete' AND llm_score IS NOT NULL"
+    ).fetchone()[0] == 120
     assert connection.execute("SELECT COUNT(*) FROM distillfeed_arxiv_seen").fetchone()[0] == 120
 
     second = plugin.refresh(context(configured, connection))
@@ -419,6 +419,223 @@ def test_large_announcement_shortlists_once_and_repeat_is_model_free(configured,
     assert repeated["status"] == "unchanged"
     assert repeated["message"] == "The daily arXiv digest is already up to date"
     assert calls == {"rank": 1, "digest": 1}
+    connection.close()
+
+
+def test_initialize_requeues_above_threshold_rows_that_never_received_ai_score(configured):
+    connection = connect(configured.database_path)
+    plugin = ArxivDigestPlugin()
+    plugin.initialize(connection, configured)
+    cfg = load_plugin_config(configured)
+    group_id = int(connection.execute(
+        "SELECT value FROM distillfeed_arxiv_state WHERE key='group_id'"
+    ).fetchone()[0])
+    feed_id = int(connection.execute(
+        "SELECT id FROM feeds WHERE group_id=? ORDER BY id LIMIT 1", (group_id,)
+    ).fetchone()[0])
+    threshold = int(cfg["filters"]["broad_candidate_threshold"])
+
+    def insert_row(stable_id: str, score: int) -> int:
+        item_id = int(connection.execute(
+            """INSERT INTO items(feed_id,stable_id,title,discovered_at,summary_eligible)
+               VALUES(?,?,?,?,0)""",
+            (feed_id, stable_id, stable_id, utcnow()),
+        ).lastrowid)
+        connection.execute(
+            """INSERT INTO distillfeed_arxiv_papers(
+                   item_id,arxiv_id,categories_json,source,local_score,decision,why,evaluation_status,evaluated_at
+               ) VALUES(?,?,?,'rss',?,'drop','Screened out before AI reranking','screened_out',?)""",
+            (item_id, stable_id, '["cs.AI"]', score, utcnow()),
+        )
+        return item_id
+
+    eligible = insert_row("2607.88001", threshold + 1)
+    ineligible = insert_row("2607.88002", threshold - 1)
+    plugin.initialize(connection, configured)
+
+    rows = {
+        int(row["item_id"]): row["evaluation_status"]
+        for row in connection.execute(
+            "SELECT item_id,evaluation_status FROM distillfeed_arxiv_papers WHERE item_id IN (?,?)",
+            (eligible, ineligible),
+        ).fetchall()
+    }
+    assert rows == {eligible: "pending", ineligible: "screened_out"}
+    connection.close()
+
+
+
+def test_initialize_repairs_large_historical_stranded_population(configured):
+    connection = connect(configured.database_path)
+    plugin = ArxivDigestPlugin()
+    plugin.initialize(connection, configured)
+    cfg = load_plugin_config(configured)
+    group_id = int(connection.execute(
+        "SELECT value FROM distillfeed_arxiv_state WHERE key='group_id'"
+    ).fetchone()[0])
+    feed_id = int(connection.execute(
+        "SELECT id FROM feeds WHERE group_id=? ORDER BY id LIMIT 1", (group_id,)
+    ).fetchone()[0])
+    threshold = int(cfg["filters"]["broad_candidate_threshold"])
+
+    for index in range(303):
+        stable_id = f"2608.{30000 + index:05d}"
+        item_id = int(connection.execute(
+            """INSERT INTO items(feed_id,stable_id,title,discovered_at,summary_eligible)
+               VALUES(?,?,?,?,0)""",
+            (feed_id, stable_id, stable_id, utcnow()),
+        ).lastrowid)
+        connection.execute(
+            """INSERT INTO distillfeed_arxiv_papers(
+                   item_id,arxiv_id,categories_json,source,local_score,decision,why,
+                   evaluation_status,evaluated_at
+               ) VALUES(?,?,?,'rss',?,'drop','Screened out before AI reranking',
+                        'screened_out',?)""",
+            (item_id, stable_id, '["cs.AI"]', threshold, utcnow()),
+        )
+    below_id = int(connection.execute(
+        """INSERT INTO items(feed_id,stable_id,title,discovered_at,summary_eligible)
+           VALUES(?,?,?,?,0)""",
+        (feed_id, "2608.99999", "below", utcnow()),
+    ).lastrowid)
+    connection.execute(
+        """INSERT INTO distillfeed_arxiv_papers(
+               item_id,arxiv_id,categories_json,source,local_score,decision,why,
+               evaluation_status,evaluated_at
+           ) VALUES(?,?,?,'rss',?,'drop','Screened out below threshold',
+                    'screened_out',?)""",
+        (below_id, "2608.99999", '["cs.AI"]', threshold - 1, utcnow()),
+    )
+
+    plugin.initialize(connection, configured)
+
+    assert connection.execute(
+        """SELECT COUNT(*) FROM distillfeed_arxiv_papers
+             WHERE local_score>=? AND llm_score IS NULL AND evaluation_status='pending'""",
+        (threshold,),
+    ).fetchone()[0] == 303
+    assert connection.execute(
+        "SELECT evaluation_status FROM distillfeed_arxiv_papers WHERE item_id=?", (below_id,)
+    ).fetchone()[0] == "screened_out"
+    connection.close()
+
+
+def test_legacy_multi_day_summary_is_rebuilt_daily_without_reranking(configured, monkeypatch):
+    connection = connect(configured.database_path)
+    plugin = ArxivDigestPlugin()
+    plugin.initialize(connection, configured)
+    group_id = int(connection.execute(
+        "SELECT value FROM distillfeed_arxiv_state WHERE key='group_id'"
+    ).fetchone()[0])
+    feed_id = int(connection.execute(
+        "SELECT id FROM feeds WHERE group_id=? ORDER BY id LIMIT 1", (group_id,)
+    ).fetchone()[0])
+    item_ids: list[int] = []
+    for arxiv_id, day in (("2608.21001", 10), ("2608.22001", 11)):
+        value = paper(arxiv_id)
+        value.published = value.updated = datetime(2026, 8, day, 12, tzinfo=UTC)
+        item_id, _created, _revised = plugin_module._store_paper(connection, value, feed_id)
+        item_ids.append(item_id)
+        connection.execute(
+            """UPDATE distillfeed_arxiv_papers
+                  SET local_score=2,llm_score=91,final_score=33.85,decision='keep',
+                      why='Already ranked',evaluation_status='complete'
+                WHERE item_id=?""",
+            (item_id,),
+        )
+    run_id = int(connection.execute(
+        """INSERT INTO llm_runs(
+               request_key,started_at,completed_at,status,model,prompt_version,
+               submitted_items,deferred_items,pricing_json
+           ) VALUES('legacy-mixed',?,?,'success','gpt-5.4-nano',?,2,0,'{}')""",
+        (utcnow(), utcnow(), plugin_module.PROMPT_VERSION),
+    ).lastrowid)
+    summary_id = int(connection.execute(
+        """INSERT INTO summaries(
+               llm_run_id,group_id,scope_kind,scope_id,policy_hash,overview,changes,
+               sections_json,created_at
+           ) VALUES(?,?,'group',?,?,'Legacy mixed digest','','[]',?)""",
+        (run_id, group_id, group_id, plugin_module.PROMPT_VERSION, utcnow()),
+    ).lastrowid)
+    for rank, item_id in enumerate(item_ids, 1):
+        connection.execute(
+            """INSERT INTO summary_items(
+                   summary_id,item_id,included,rank,importance,description,justification,story_cluster
+               ) VALUES(?,?,1,?,91,'Abstract','Already ranked','arXiv')""",
+            (summary_id, item_id, rank),
+        )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    rerank_calls: list[int] = []
+    digest_days: list[str] = []
+
+    def rank(candidates, cfg, **kwargs):
+        rerank_calls.append(len(candidates))
+        return {}, LLMUsage()
+
+    def digest(values, cfg, language):
+        digest_days.append(values[0][0].published.date().isoformat())
+        return ({"overview": "Rebuilt daily digest", "sections": []}, LLMUsage())
+
+    monkeypatch.setattr(plugin_module, "rerank", rank)
+    monkeypatch.setattr(plugin_module, "daily_digest", digest)
+    monkeypatch.setattr(
+        plugin_module, "deliver_arxiv_pushes", lambda *args, **kwargs: {"status": "disabled"},
+    )
+
+    result = plugin.summarize(context(configured, connection, automatic=False))
+
+    assert result["status"] == "success"
+    assert result["completed_announcements"] == ["2026-08-10", "2026-08-11"]
+    assert rerank_calls == []
+    assert digest_days == ["2026-08-10", "2026-08-11"]
+    dedicated = connection.execute(
+        """SELECT COUNT(*) FROM summaries s JOIN llm_runs lr ON lr.id=s.llm_run_id
+             WHERE lr.status='success' AND lr.prompt_version LIKE 'distillfeed-arxiv-%'"""
+    ).fetchone()[0]
+    assert dedicated == 3  # one legacy multi-day record plus two daily revisions
+    repeated = plugin.summarize(context(configured, connection, automatic=False))
+    assert repeated["status"] == "unchanged"
+    connection.close()
+
+
+def test_revised_paper_clears_stale_ai_result_before_rerank(configured):
+    connection = connect(configured.database_path)
+    plugin = ArxivDigestPlugin()
+    plugin.initialize(connection, configured)
+    group_id = int(connection.execute(
+        "SELECT value FROM distillfeed_arxiv_state WHERE key='group_id'"
+    ).fetchone()[0])
+    feed_id = int(connection.execute(
+        "SELECT id FROM feeds WHERE group_id=? ORDER BY id LIMIT 1", (group_id,)
+    ).fetchone()[0])
+    original = paper("2608.23001")
+    original.version = "v1"
+    item_id, _created, _revised = plugin_module._store_paper(connection, original, feed_id)
+    connection.execute(
+        """UPDATE distillfeed_arxiv_papers
+              SET local_score=5,llm_score=97,final_score=38.95,decision='keep',
+                  why='Old model result',evaluation_status='complete',evaluated_at=?
+            WHERE item_id=?""",
+        (utcnow(), item_id),
+    )
+    revised = paper("2608.23001")
+    revised.version = "v2"
+
+    same_item, created, needs_evaluation = plugin_module._store_paper(connection, revised, feed_id)
+    row = connection.execute(
+        """SELECT version,local_score,llm_score,final_score,decision,why,
+                  evaluation_status,evaluated_at
+             FROM distillfeed_arxiv_papers WHERE item_id=?""",
+        (item_id,),
+    ).fetchone()
+
+    assert same_item == item_id
+    assert created is False and needs_evaluation is True
+    assert row["version"] == "v2"
+    assert row["local_score"] is None and row["llm_score"] is None and row["final_score"] is None
+    assert row["decision"] is None and row["why"] is None
+    assert row["evaluation_status"] == "pending" and row["evaluated_at"] is None
     connection.close()
 
 
@@ -524,11 +741,20 @@ def test_arxiv_archive_and_rankings_follow_configured_category_scope(configured)
 
     client = create_app(str(configured.path)).test_client()
     reader = client.get(f"/?feed={feed_id}")
-    assert b'data-sort-profile="relevance"' in reader.data
-    assert b'id="relevance-per-day-limit"' in reader.data
-    summary_list = reader.data.split(b'id="summary-item-list"', 1)[1].split(b"</ul>", 1)[0]
-    assert summary_list.index(b"Archive paper 2") < summary_list.index(b"Archive paper 3")
-    assert b"Show in item panel" in summary_list
+    assert reader.status_code == 200
+    assert b'id="review-app"' in reader.data
+    assert b'id="review-page-size"' in reader.data
+    ranked = client.get(
+        f"/api/review/days/2026-08-10/items?feed_id={feed_id}&preset=everything&sort=ai&page_size=25"
+    )
+    assert ranked.status_code == 200
+    ranked_items = ranked.get_json()["items"]
+    assert [item["title"] for item in ranked_items] == [
+        "Archive paper 2", "Archive paper 3", "Archive paper 0", "Archive paper 1",
+    ]
+    assert [item["ai_state"] for item in ranked_items] == [
+        "scored", "scored", "pending", "not-sent",
+    ]
     all_page = client.get("/arxiv")
     assert all_page.status_code == 200
     assert b"All fetched papers" in all_page.data
@@ -711,6 +937,155 @@ def test_same_day_late_evidence_creates_append_only_digest_revision(configured, 
     connection.close()
 
 
+def test_historical_recovery_is_partitioned_by_day_and_reuses_existing_ai_scores(configured, monkeypatch):
+    connection = connect(configured.database_path)
+    plugin = ArxivDigestPlugin()
+    plugin.initialize(connection, configured)
+    group_id = int(connection.execute(
+        "SELECT value FROM distillfeed_arxiv_state WHERE key='group_id'"
+    ).fetchone()[0])
+    feed_id = int(connection.execute(
+        "SELECT id FROM feeds WHERE group_id=? ORDER BY id LIMIT 1", (group_id,)
+    ).fetchone()[0])
+    stamps = {
+        "2608.10001": datetime(2026, 8, 10, 12, tzinfo=UTC),
+        "2608.10002": datetime(2026, 8, 10, 13, tzinfo=UTC),
+        "2608.11001": datetime(2026, 8, 11, 12, tzinfo=UTC),
+    }
+    item_ids: dict[str, int] = {}
+    papers: dict[str, Paper] = {}
+    for arxiv_id, stamp in stamps.items():
+        value = paper(arxiv_id)
+        value.published = value.updated = stamp
+        papers[arxiv_id] = value
+        item_id, _created, _revised = plugin_module._store_paper(connection, value, feed_id)
+        item_ids[arxiv_id] = item_id
+    connection.execute(
+        """UPDATE distillfeed_arxiv_papers
+              SET local_score=5,llm_score=91,final_score=36.85,decision='keep',
+                  why='Already ranked',evaluation_status='complete'
+            WHERE item_id=?""",
+        (item_ids["2608.10001"],),
+    )
+    for arxiv_id in ("2608.10002", "2608.11001"):
+        connection.execute(
+            """UPDATE distillfeed_arxiv_papers
+                  SET local_score=2,llm_score=NULL,final_score=NULL,decision='drop',
+                      why='Screened out before AI reranking',evaluation_status='screened_out'
+                WHERE item_id=?""",
+            (item_ids[arxiv_id],),
+        )
+    plugin.initialize(connection, configured)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(
+        plugin_module, "compute_local_score",
+        lambda value, cfg: LocalScore(5 if value.arxiv_id == "2608.10001" else 2, ["stored"]),
+    )
+    calls: list[tuple[str, list[str]]] = []
+
+    def rank(candidates, cfg, **kwargs):
+        identifiers = [value.arxiv_id for value, _local in candidates]
+        calls.append(("rank", identifiers))
+        return ({
+            value.arxiv_id: {
+                "score": 88, "decision": "keep", "why": "Recovered", "tags": [],
+            }
+            for value, _local in candidates
+        }, LLMUsage())
+
+    def digest(values, cfg, language):
+        identifiers = [value.arxiv_id for value, _local, _decision in values]
+        calls.append(("digest", identifiers))
+        return ({"overview": "Recovered day", "sections": []}, LLMUsage())
+
+    monkeypatch.setattr(plugin_module, "rerank", rank)
+    monkeypatch.setattr(plugin_module, "daily_digest", digest)
+    monkeypatch.setattr(
+        plugin_module, "deliver_arxiv_pushes", lambda *args, **kwargs: {"status": "disabled"},
+    )
+    result = plugin.summarize(context(configured, connection, automatic=False))
+
+    assert result["status"] == "success"
+    assert result["completed_announcements"] == ["2026-08-10", "2026-08-11"]
+    assert calls[0] == ("rank", ["2608.10002"])
+    assert calls[1][0] == "digest"
+    assert set(calls[1][1]) == {"2608.10001", "2608.10002"}
+    assert calls[2:] == [("rank", ["2608.11001"]), ("digest", ["2608.11001"])]
+    assert connection.execute(
+        "SELECT COUNT(*) FROM distillfeed_arxiv_papers WHERE local_score>=0 AND llm_score IS NULL"
+    ).fetchone()[0] == 0
+    assert connection.execute("SELECT COUNT(*) FROM summaries").fetchone()[0] == 2
+    connection.close()
+
+
+def test_historical_recovery_commits_completed_days_and_resumes_after_failure(configured, monkeypatch):
+    connection = connect(configured.database_path)
+    plugin = ArxivDigestPlugin()
+    plugin.initialize(connection, configured)
+    group_id = int(connection.execute(
+        "SELECT value FROM distillfeed_arxiv_state WHERE key='group_id'"
+    ).fetchone()[0])
+    feed_id = int(connection.execute(
+        "SELECT id FROM feeds WHERE group_id=? ORDER BY id LIMIT 1", (group_id,)
+    ).fetchone()[0])
+    for arxiv_id, day in (("2608.13001", 13), ("2608.14001", 14)):
+        value = paper(arxiv_id)
+        value.published = value.updated = datetime(2026, 8, day, 12, tzinfo=UTC)
+        item_id, _created, _revised = plugin_module._store_paper(connection, value, feed_id)
+        connection.execute(
+            """UPDATE distillfeed_arxiv_papers
+                  SET local_score=2,decision='drop',why='Screened out before AI reranking',
+                      evaluation_status='screened_out'
+                WHERE item_id=?""",
+            (item_id,),
+        )
+    plugin.initialize(connection, configured)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(plugin_module, "compute_local_score", lambda value, cfg: LocalScore(2, ["stored"]))
+    monkeypatch.setattr(
+        plugin_module, "rerank",
+        lambda candidates, cfg, **kwargs: ({
+            value.arxiv_id: {"score": 90, "decision": "keep", "why": "Recovered", "tags": []}
+            for value, _local in candidates
+        }, LLMUsage()),
+    )
+    attempts = {"digest": 0}
+
+    def flaky_digest(values, cfg, language):
+        attempts["digest"] += 1
+        if attempts["digest"] == 2:
+            raise RuntimeError("second day unavailable")
+        return ({"overview": "Recovered", "sections": []}, LLMUsage())
+
+    monkeypatch.setattr(plugin_module, "daily_digest", flaky_digest)
+    monkeypatch.setattr(
+        plugin_module, "deliver_arxiv_pushes", lambda *args, **kwargs: {"status": "disabled"},
+    )
+    first = plugin.summarize(context(configured, connection, automatic=False))
+    assert first["status"] == "llm-failed"
+    assert first["completed_announcements"] == ["2026-08-13"]
+    assert first["failed_announcement"] == "2026-08-14"
+    states = {
+        row["arxiv_id"]: row["evaluation_status"]
+        for row in connection.execute(
+            "SELECT arxiv_id,evaluation_status FROM distillfeed_arxiv_papers"
+        )
+    }
+    assert states == {"2608.13001": "complete", "2608.14001": "pending"}
+
+    monkeypatch.setattr(
+        plugin_module, "daily_digest",
+        lambda values, cfg, language: ({"overview": "Retry", "sections": []}, LLMUsage()),
+    )
+    second = plugin.summarize(context(configured, connection, automatic=False))
+    assert second["status"] == "success"
+    assert second["completed_announcements"] == ["2026-08-14"]
+    assert [row[0] for row in connection.execute(
+        "SELECT status FROM llm_runs ORDER BY id"
+    ).fetchall()] == ["success", "failed", "success"]
+    connection.close()
+
+
 @pytest.mark.parametrize(
     ("disabled", "reason"),
     ((True, "ai-disabled"), (False, "api-key-missing")),
@@ -840,7 +1215,7 @@ def test_invalid_arxiv_key_is_actionable_persistent_and_never_reported_as_succes
     assert b"private-key-material" not in ai_page
     reader = client.get(f"/?group={group_id}").data
     assert b"arXiv AI update failed" in reader
-    assert b"Retry daily digest" in reader
+    assert b"Retry daily digests" in reader
     assert b"private-key-material" not in reader
     script = client.get("/static/app.js").data
     assert b"arXiv AI update failed" in script

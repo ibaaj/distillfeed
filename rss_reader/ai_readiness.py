@@ -135,24 +135,85 @@ def ordinary_readiness(
 
 
 def _arxiv_estimate(connection, cfg: dict[str, Any]) -> dict[str, Any]:
+    broad = int(cfg["filters"].get("broad_candidate_threshold", 0))
     try:
         rows = connection.execute(
-            """SELECT LENGTH(i.title)+LENGTH(i.description_text) AS characters
-               FROM distillfeed_arxiv_papers ap JOIN items i ON i.id=ap.item_id
-               WHERE ap.evaluation_status='pending'
-               ORDER BY ap.item_id LIMIT ?""",
-            (int(cfg["llm"].get("max_candidates", 100)),),
+            """SELECT ap.evaluation_status,ap.local_score,ap.llm_score,
+                      LENGTH(i.title)+LENGTH(i.description_text) AS characters,
+                      substr(COALESCE(i.published_at,i.discovered_at),1,10) AS digest_day
+                 FROM distillfeed_arxiv_papers ap
+                 JOIN items i ON i.id=ap.item_id
+                 JOIN feeds f ON f.id=i.feed_id
+                WHERE f.enabled=1 AND f.xml_url LIKE 'plugin://arxiv/%'
+                ORDER BY COALESCE(i.published_at,i.discovered_at),ap.item_id"""
+        ).fetchall()
+        dedicated_rows = connection.execute(
+            """SELECT MIN(substr(COALESCE(i.published_at,i.discovered_at),1,10)) AS first_day,
+                      MAX(substr(COALESCE(i.published_at,i.discovered_at),1,10)) AS last_day
+                 FROM summaries s
+                 JOIN llm_runs lr ON lr.id=s.llm_run_id
+                 JOIN summary_items si ON si.summary_id=s.id
+                 JOIN items i ON i.id=si.item_id
+                 JOIN feeds f ON f.id=i.feed_id
+                WHERE lr.status='success'
+                  AND lr.prompt_version LIKE 'distillfeed-arxiv-%'
+                  AND f.enabled=1 AND f.xml_url LIKE 'plugin://arxiv/%'
+                GROUP BY s.id
+               HAVING first_day=last_day"""
         ).fetchall()
     except Exception:
         rows = []
-    count = len(rows)
+        dedicated_rows = []
+
+    dedicated_days = {
+        str(row["first_day"]) for row in dedicated_rows if row["first_day"]
+    }
+    ranking_rows = []
+    scored_by_day: dict[str, list[Any]] = {}
+    for row in rows:
+        day = str(row["digest_day"] or "undated")
+        local = row["local_score"]
+        status = str(row["evaluation_status"] or "")
+        llm_score = row["llm_score"]
+        needs_ai = (
+            status == "pending" and (local is None or int(local) >= broad)
+        ) or (
+            status in {"screened_out", "complete"}
+            and llm_score is None and local is not None and int(local) >= broad
+        )
+        if needs_ai:
+            ranking_rows.append(row)
+        if (
+            status == "complete" and llm_score is not None
+            and local is not None and int(local) >= broad
+        ):
+            scored_by_day.setdefault(day, []).append(row)
+
     batch_size = max(1, int(cfg["llm"].get("ranking_batch_size", 20)))
-    ranking_requests = math.ceil(count / batch_size) if count else 0
-    requests = ranking_requests + (1 if count else 0)
-    input_tokens = math.ceil(sum(int(row["characters"] or 0) for row in rows) / 4)
+    ranking_day_counts: dict[str, int] = {}
+    for row in ranking_rows:
+        day = str(row["digest_day"] or "undated")
+        ranking_day_counts[day] = ranking_day_counts.get(day, 0) + 1
+    missing_digest_days = set(scored_by_day).difference(dedicated_days)
+    composition_days = set(ranking_day_counts).union(missing_digest_days)
+    ranking_requests = sum(
+        math.ceil(value / batch_size) for value in ranking_day_counts.values()
+    )
+    composition_requests = len(composition_days)
+
+    ranking_chars = sum(int(row["characters"] or 0) for row in ranking_rows)
+    composition_chars = 0
+    for day in composition_days:
+        composition_chars += sum(
+            int(row["characters"] or 0) for row in scored_by_day.get(day, [])
+        )
+    # Pending papers will also be part of their day's digest after ranking.
+    composition_chars += ranking_chars
+    input_tokens = math.ceil((ranking_chars + composition_chars) / 4)
+    count = len(ranking_rows)
     output_tokens = (
         count * max(80, int(cfg["llm"].get("estimated_output_tokens_per_paper", 40)))
-        + ranking_requests * 1000 + (5000 if count else 0)
+        + ranking_requests * 1000 + composition_requests * 5000
     )
     cost = (
         input_tokens * float(cfg["llm"].get("input_price_per_million", 0))
@@ -161,8 +222,10 @@ def _arxiv_estimate(connection, cfg: dict[str, Any]) -> dict[str, Any]:
     return {
         "pending_items": count,
         "evaluation_requests": ranking_requests,
-        "composition_requests": 1 if count else 0,
-        "planned_requests": requests,
+        "composition_requests": composition_requests,
+        "planned_requests": ranking_requests + composition_requests,
+        "pending_days": len(composition_days),
+        "missing_daily_digests": len(missing_digest_days),
         "estimated_input_tokens": input_tokens,
         "estimated_output_tokens": output_tokens,
         "estimated_cost_usd": cost,
