@@ -3,7 +3,8 @@
 const assert = require('node:assert/strict');
 const Review = require('../rss_reader/static/review-state.js');
 
-const options = { defaultMinAI: 80, today: '2026-08-18' };
+const options = { defaultMinAI: 80, today: '2026-08-18', isArxiv: true, defaultPreset: 'best-unread', defaultSort: 'ai', displayMode: 'daily' };
+const ordinaryOptions = { defaultMinAI: 80, today: '2026-08-18', isArxiv: false, defaultPreset: 'everything', defaultSort: 'date', displayMode: 'direct' };
 
 function reduce(state, action) { return Review.reducer(state, action); }
 
@@ -20,6 +21,36 @@ for (const [preset, expected] of Object.entries(expectedPresets)) {
   const actual = Review.normalizeFilters({ preset }, options);
   for (const [key, value] of Object.entries(expected)) assert.equal(actual[key], value, `${preset}.${key}`);
 }
+
+// Ordinary OPML groups and RSS feeds are inboxes: no-query and invalid-query
+// states show every item chronologically, independent of the day layout.
+const ordinaryDefault = Review.normalizeFilters({}, ordinaryOptions);
+assert.equal(ordinaryDefault.preset, 'everything');
+assert.equal(ordinaryDefault.sort, 'date');
+assert.equal(ordinaryDefault.read, 'all');
+assert.equal(Review.defaultPreset({ ...ordinaryOptions, displayMode: 'daily' }), 'everything');
+assert.equal(Review.defaultPreset({ ...ordinaryOptions, displayMode: 'direct' }), 'everything');
+assert.equal(Review.normalizeFilters({ preset: 'invalid' }, ordinaryOptions).preset, 'everything');
+
+// Item expansion is an explicit state transition, independent of the external title link.
+assert.equal(Review.contentToggleLabel(false), 'View content');
+assert.equal(Review.contentToggleLabel(true), 'Hide content');
+
+// Unfiltered counts describe the item set directly; filtered counts describe results.
+assert.equal(
+  Review.countSummary({ total: 18, matching: 18, unread: 10, pending: 0 }, ordinaryDefault, ordinaryOptions),
+  '18 items · 10 unread',
+);
+const searched = Review.normalizeFilters({ preset: 'custom', q: 'logic' }, ordinaryOptions);
+assert.equal(
+  Review.countSummary({ total: 18, matching: 4, unread: 10, pending: 0 }, searched, ordinaryOptions),
+  '4 results · 18 total · 10 unread overall',
+);
+assert.equal(Review.dayReadActionLabel('2026-08-18', '2026-08-18', 7), 'Mark today as read');
+assert.equal(Review.dayReadActionLabel('2026-08-17', '2026-08-18', 7), 'Mark day as read');
+assert.equal(Review.dayReadActionLabel('2026-08-18', '2026-08-18', 0), 'Today is read');
+assert.equal(Review.dayReadActionLabel('2026-08-17', '2026-08-18', 0), 'Day is read');
+assert.equal(Review.dayReadActionLabel('2026-08-17', '2026-08-18', 7, true), 'Marking as read…');
 
 // Every filter accepted by the toolbar changes state, selects Custom, and starts a new query generation.
 const values = {

@@ -15,14 +15,16 @@
   <meta name="selected-feed-id" content="{{ selected_feed_id or '' }}">
   <meta name="review-preference-group-id" content="{{ review_preference_group_id or '' }}">
   <meta name="review-display-mode" content="{{ review_display_mode or 'daily' }}">
+  <meta name="review-default-preset" content="{{ review_default_preset or ('best-unread' if is_arxiv_scope else 'everything') }}">
+  <meta name="review-default-sort" content="{{ review_default_sort or ('ai' if is_arxiv_scope else 'date') }}">
   <meta name="arxiv-digest-scope" content="{{ 'true' if is_arxiv_scope else 'false' }}">
   <meta name="item-sort-profile" content="{{ item_sort_profile or 'date' }}">
-  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='distillfeed-icon.svg', v='0.24.1-final') }}">
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='distillfeed-icon.svg', v='0.24.2-title-content1') }}">
   <link rel="manifest" href="{{ url_for('static', filename='manifest.webmanifest') }}">
   <meta name="theme-color" content="#315f9c">
   <title>DistillFeed</title>
-  <script src="{{ url_for('static', filename='layout-init.js', v='0.24.1-final') }}"></script>
-  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='0.24.1-final') }}">
+  <script src="{{ url_for('static', filename='layout-init.js', v='0.24.2-title-content1') }}"></script>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='0.24.2-title-content1') }}">
 </head>
 {% set reader_notices = system_notices|default([], true) %}
 <body class="reader-page{% if ui.dark_mode %} dark-mode{% endif %}">
@@ -157,10 +159,10 @@
       {% elif scope_ai_mode == 'off' %}<div class="scope-status"><strong>AI is off for this source.</strong> Stored source text remains available. <button id="scope-enable-ai" type="button">Enable AI</button></div>{% endif %}
 
       <div class="review-toolbar" role="search" aria-label="Review filters">
-        <label><span>View</span><select id="review-preset"><option value="best-unread">Best unread</option><option value="catch-up">Catch up</option><option value="today">Today</option><option value="awaiting-ai">Awaiting AI</option><option value="starred">Starred</option><option value="everything">Everything</option><option value="custom">Custom</option></select></label>
+        <label><span>View</span><select id="review-preset"><option value="best-unread" {% if review_default_preset == 'best-unread' %}selected{% endif %}>Best unread</option><option value="catch-up" {% if review_default_preset == 'catch-up' %}selected{% endif %}>Catch up</option><option value="today" {% if review_default_preset == 'today' %}selected{% endif %}>Today</option><option value="awaiting-ai" {% if review_default_preset == 'awaiting-ai' %}selected{% endif %}>Awaiting AI</option><option value="starred" {% if review_default_preset == 'starred' %}selected{% endif %}>Starred</option><option value="everything" {% if review_default_preset == 'everything' %}selected{% endif %}>Everything</option><option value="custom">Custom</option></select></label>
         <label class="review-toolbar-search"><span>Search</span><input id="review-search" type="search" maxlength="200" placeholder="Title, author, summary, rationale or tag"></label>
         <label><span>Minimum AI</span><select id="review-min-ai"><option value="0">Any score</option><option value="50">50+</option><option value="60">60+</option><option value="70">70+</option><option value="80">80+</option><option value="90">90+</option><option value="95">95+</option></select></label>
-        <label><span>Sort</span><select id="review-sort"><option value="ai">AI relevance</option><option value="date">Newest first</option><option value="local">Local score</option></select></label>
+        <label><span>Sort</span><select id="review-sort"><option value="ai" {% if review_default_sort == 'ai' %}selected{% endif %}>AI relevance</option><option value="date" {% if review_default_sort == 'date' %}selected{% endif %}>Newest first</option><option value="local" {% if review_default_sort == 'local' %}selected{% endif %}>Local score</option></select></label>
         <label><span>Per day</span><select id="review-page-size"><option value="10">10 items</option><option value="25">25 items</option><option value="50">50 items</option></select></label>
         <details id="review-advanced"><summary>Advanced</summary><div class="review-advanced-panel">
           <label><span>Read state</span><select id="review-read"><option value="all">All</option><option value="unread">Unread</option><option value="read">Read</option></select></label>
@@ -332,8 +334,8 @@
     </div>
   </form></dialog>
 
-  <script src="{{ url_for('static', filename='review-state.js', v='0.24.1-final') }}" defer></script>
-  <script src="{{ url_for('static', filename='review.js', v='0.24.1-final') }}" defer></script>
-  <script src="{{ url_for('static', filename='app.js', v='0.24.1-final') }}" defer></script>
+  <script src="{{ url_for('static', filename='review-state.js', v='0.24.2-title-content1') }}" defer></script>
+  <script src="{{ url_for('static', filename='review.js', v='0.24.2-title-content1') }}" defer></script>
+  <script src="{{ url_for('static', filename='app.js', v='0.24.2-title-content1') }}" defer></script>
 </body>
 </html>

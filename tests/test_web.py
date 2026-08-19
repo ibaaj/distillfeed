@@ -266,7 +266,7 @@ def test_item_details_date_hierarchy_and_portable_exports(configured):
     summaries = client.get("/summaries")
     assert b"Print / PDF" in summaries.data
     assert b'aria-label="Print or save summaries as PDF"' in summaries.data
-    assert b"summary.js?v=0.24.1-final" in summaries.data
+    assert b"summary.js?v=0.24.2-title-content1" in summaries.data
 
 
 def test_standalone_page_headers_keep_actions_compact(configured):
@@ -322,6 +322,18 @@ def test_review_stream_keeps_large_history_out_of_initial_html_and_pages_each_da
     script = client.get("/static/review.js").data
     assert b"Show next" in script
     assert b"next_cursor" in script
+    assert b"Open source" not in script
+    assert b"Open article" not in script
+    assert b"Open abstract" not in script
+    assert b"Open PDF" not in script
+    assert b'class="review-item-title"' in script
+    assert b'target="_blank"' in script
+    assert b'class="review-content-toggle"' in script
+    state_script = client.get("/static/review-state.js").data
+    assert b"View content" in state_script
+    assert b"Hide content" in state_script
+    assert b"Mark today as read" in state_script
+    assert b"Finish day" not in script
     stylesheet = client.get("/static/app.css").data
     assert b".review-day-list" in stylesheet
     assert b".review-load-more" in stylesheet
@@ -333,8 +345,8 @@ def test_reader_restores_split_widths_before_first_paint(configured):
     initializer = client.get("/static/layout-init.js")
     application = client.get("/static/app.js")
 
-    early_script = b'<script src="/static/layout-init.js?v=0.24.1-final"></script>'
-    stylesheet = b'<link rel="stylesheet" href="/static/app.css?v=0.24.1-final">'
+    early_script = b'<script src="/static/layout-init.js?v=0.24.2-title-content1"></script>'
+    stylesheet = b'<link rel="stylesheet" href="/static/app.css?v=0.24.2-title-content1">'
     assert early_script in page.data
     assert page.data.index(early_script) < page.data.index(stylesheet)
     assert b"defer" not in early_script and b"async" not in early_script
@@ -891,7 +903,7 @@ def test_mobile_layers_narrow_pane_controls_and_favicon_are_bounded(configured):
     assert b'class="nav-menu main-menu"' in page.data
     assert b'<span class="toolbar-label">Menu</span>' in page.data
     assert b'class="action-menu scope-actions"' in page.data
-    favicon = b'<link rel="icon" type="image/svg+xml" href="/static/distillfeed-icon.svg?v=0.24.1-final">'
+    favicon = b'<link rel="icon" type="image/svg+xml" href="/static/distillfeed-icon.svg?v=0.24.2-title-content1">'
     for path in ("/", "/summaries", "/history", "/health", "/notifications", "/costs", "/saved?view=favorites"):
         response = client.get(path)
         assert response.status_code == 200
@@ -967,8 +979,8 @@ def test_settings_contain_ai_source_and_queue_transitions_without_external_subme
 
 def test_service_worker_revalidates_shell_and_never_caches_api(configured):
     worker = create_app(str(configured.path)).test_client().get("/static/service-worker.js").data
-    assert b"distillfeed-v21" in worker
-    assert b"/static/layout-init.js?v=0.24.1-final" in worker
+    assert b"distillfeed-v242-title-content1" in worker
+    assert b"/static/layout-init.js?v=0.24.2-title-content1" in worker
     assert b"url.pathname.startsWith('/api/')" in worker
     assert b"fetch(event.request, { cache: 'no-cache' })" in worker
     assert b"caches.match(event.request).then(cached => cached || fetch(event.request))" not in worker
@@ -1544,12 +1556,13 @@ def test_all_summaries_page_contains_active_feed_summary(configured):
     script = client.get("/static/review.js").data
     assert b"/api/review/days" in script
     assert b"/api/review/items/" in script
-    assert b"review-source-links" in script
+    assert b'class="review-item-title"' in script
+    assert b'class="review-content-toggle"' in script
     state_script = client.get("/static/review-state.js").data
     assert b"activeDaysRequestId" in state_script
     stylesheet = client.get("/static/app.css").data
-    assert b".review-source-links" in stylesheet
-    assert b"gap: 12px" in stylesheet
+    assert b".review-content-toggle" in stylesheet
+    assert b".review-source-links" not in stylesheet
     with connect(configured.database_path) as connection:
         connection.execute("UPDATE feeds SET llm_enabled=0 WHERE id=?", (feed_id,))
     active_page = app.test_client().get("/summaries")
@@ -1609,6 +1622,19 @@ def test_group_day_view_preference_is_persisted_inherited_and_rendered(configure
         assert f'<meta name="review-preference-group-id" content="{group_id}">'.encode() in page.data
         assert b'<meta name="review-display-mode" content="direct">' in page.data
         assert b'<option value="direct" selected>Show items directly</option>' in page.data
+
+    ordinary_default_days = client.get(
+        f"/api/review/days?group_id={group_id}"
+    ).get_json()
+    assert ordinary_default_days["filters"]["preset"] == "everything"
+    assert ordinary_default_days["filters"]["sort"] == "date"
+    assert ordinary_default_days["counts"]["matching"] == ordinary_default_days["counts"]["total"] == 1
+    ordinary_default_items = client.get(
+        f"/api/review/days/2026-08-18/items?feed_id={feed_id}"
+    ).get_json()
+    assert ordinary_default_items["items"][0]["title"] == "A new video"
+    assert ordinary_default_items["items"][0]["is_arxiv"] is False
+    assert ordinary_default_items["items"][0]["pdf_url"] == ""
 
     group_days = client.get(
         f"/api/review/days?group_id={group_id}&preset=catch-up"

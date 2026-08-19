@@ -1,12 +1,12 @@
-const CACHE = 'distillfeed-v241-final';
+const CACHE = 'distillfeed-v242-title-content1';
 const SHELL = [
-  '/static/layout-init.js?v=0.24.1-final',
-  '/static/app.css?v=0.24.1-final',
-  '/static/review-state.js?v=0.24.1-final',
-  '/static/review.js?v=0.24.1-final',
-  '/static/app.js?v=0.24.1-final',
+  '/static/layout-init.js?v=0.24.2-title-content1',
+  '/static/app.css?v=0.24.2-title-content1',
+  '/static/review-state.js?v=0.24.2-title-content1',
+  '/static/review.js?v=0.24.2-title-content1',
+  '/static/app.js?v=0.24.2-title-content1',
   '/static/manifest.webmanifest',
-  '/static/distillfeed-icon.svg?v=0.24.1-final',
+  '/static/distillfeed-icon.svg?v=0.24.2-title-content1',
 ];
 
 self.addEventListener('install', event => {

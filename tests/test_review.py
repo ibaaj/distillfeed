@@ -8,6 +8,8 @@ import pytest
 from rss_reader.db import connect, initialize, transaction
 from rss_reader.review import (
     _duplicates_source,
+    default_review_preset,
+    default_review_sort,
     _matches,
     finish_review_day,
     list_review_day_items,
@@ -378,3 +380,46 @@ def test_review_display_mode_is_group_scoped_and_inherited_by_feeds(review_db: P
         assert feed_payload["scope"]["preference_group_id"] == 1
         assert group_payload["scope"]["review_display_mode"] == "direct"
         assert feed_payload["scope"]["review_display_mode"] == "direct"
+
+def test_scope_specific_defaults_keep_ordinary_feeds_complete_and_arxiv_ranked(review_db: Path):
+    with connect(review_db) as connection, transaction(connection, immediate=True):
+        ordinary_group = int(connection.execute(
+            "INSERT INTO groups(title,position,created_at) VALUES('YouTube',1,?)",
+            (f"{TODAY}T00:00:00+00:00",),
+        ).lastrowid)
+        ordinary_feed = int(connection.execute(
+            "INSERT INTO feeds(group_id,title,xml_url,enabled,created_at) VALUES(?,?,?,1,?)",
+            (ordinary_group, "Channel", "https://example.test/youtube.xml", f"{TODAY}T00:00:00+00:00"),
+        ).lastrowid)
+        connection.execute(
+            """INSERT INTO items(feed_id,stable_id,title,url,published_at,discovered_at)
+               VALUES(?,?,?,?,?,?)""",
+            (ordinary_feed, "video-1", "A video", "https://example.test/watch/1",
+             f"{TODAY}T08:00:00+00:00", f"{TODAY}T08:00:00+00:00"),
+        )
+
+    with connect(review_db) as connection:
+        ordinary_group_scope = resolve_review_scope(connection, group_id=ordinary_group)
+        ordinary_feed_scope = resolve_review_scope(connection, feed_id=ordinary_feed)
+        for scope in (ordinary_group_scope, ordinary_feed_scope):
+            assert scope.is_arxiv is False
+            assert default_review_preset(scope) == "everything"
+            assert default_review_sort(scope) == "date"
+            filters = parse_review_filters(
+                {}, default_preset=default_review_preset(scope),
+                default_sort=default_review_sort(scope), today=TODAY,
+            )
+            assert filters["preset"] == "everything"
+            assert filters["sort"] == "date"
+            payload = list_review_days(connection, scope, filters, minimum_relevance=70)
+            assert payload["counts"]["matching"] == payload["counts"]["total"] == 1
+            assert payload["scope"]["default_preset"] == "everything"
+            assert payload["scope"]["default_sort"] == "date"
+
+        arxiv_scope = resolve_review_scope(connection, group_id=1)
+        assert default_review_preset(arxiv_scope) == "best-unread"
+        assert default_review_sort(arxiv_scope) == "ai"
+        connection.execute("UPDATE groups SET review_display_mode='direct' WHERE id=1")
+        arxiv_direct = resolve_review_scope(connection, group_id=1)
+        assert default_review_preset(arxiv_direct) == "catch-up"
+        assert default_review_sort(arxiv_direct) == "ai"

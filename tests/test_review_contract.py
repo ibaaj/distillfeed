@@ -83,6 +83,8 @@ def test_filter_toolbar_frontend_backend_contract_is_complete():
 
     assert "review-preference-group-id" in template
     assert "review-display-mode" in template
+    assert "review-default-preset" in template
+    assert "review-default-sort" in template
     assert "DIRECT_LOAD_MARGIN = 600" in script
     assert "DIRECT_LOAD_CONCURRENCY = 3" in script
     assert "getBoundingClientRect" in script
@@ -90,17 +92,23 @@ def test_filter_toolbar_frontend_backend_contract_is_complete():
     assert "details.dataset.openState" in script
     assert "preferenceGroupId" in script
     assert "review_display_mode" in script
-    assert "initialDisplayMode === 'direct' ? 'catch-up' : 'best-unread'" in script
-    assert "state.displayMode === 'direct' ? 'catch-up' : 'best-unread'" in script
+    assert "rawFilters.preset = State.defaultPreset(options)" in script
+    assert "State.defaultPreset({ ...options, displayMode: state.displayMode })" in script
+    assert "Changing the day layout must never silently hide or reveal items" in script
     assert "normalizeDisplayMode" in state_script
-    assert "review-source-separator" in script
-    assert ".review-source-links" in stylesheet and "gap: 12px" in stylesheet
-    assert ".review-source-separator" in stylesheet
+    assert 'class="review-item-title"' in script
+    assert 'target="_blank"' in script
+    assert 'data-action="open-item-link"' in script
+    assert "window.setTimeout(() => changeRead(itemId), 0)" in script
+    assert 'class="review-content-toggle"' in script
+    assert "State.contentToggleLabel(open)" in script
+    assert ".review-content-toggle" in stylesheet
+    assert ".review-source-links" not in stylesheet
     assert "Stored item summary" not in script
     assert "block.items" not in template
-    assert "v='0.24.1-final'" in template
-    assert "service-worker.js?v=0.24.1-final" in (
+    assert "v='0.24.2-title-content1'" in template
+    assert "service-worker.js?v=0.24.2-title-content1" in (
         ROOT / "rss_reader" / "static" / "app.js"
     ).read_text("utf-8")
-    assert "distillfeed-v241-final" in service_worker
-    assert "?v=0.24.1-final" in service_worker
+    assert "distillfeed-v242-title-content1" in service_worker
+    assert "?v=0.24.2-title-content1" in service_worker

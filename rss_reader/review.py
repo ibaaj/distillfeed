@@ -35,6 +35,23 @@ class ReviewScope:
     review_display_mode: str
 
 
+def default_review_preset(scope: ReviewScope) -> str:
+    """Return the no-query preset for this review scope.
+
+    Ordinary RSS/Atom scopes behave like an article inbox and therefore expose
+    every stored item by default.  The specialist arXiv workflow keeps its
+    relevance-first defaults.
+    """
+    if not scope.is_arxiv:
+        return "everything"
+    return "catch-up" if scope.review_display_mode == "direct" else "best-unread"
+
+
+def default_review_sort(scope: ReviewScope) -> str:
+    """Use chronological ordering for ordinary feeds and AI ordering for arXiv."""
+    return "ai" if scope.is_arxiv else "date"
+
+
 def _table_exists(connection: sqlite3.Connection, name: str) -> bool:
     return bool(connection.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
@@ -131,32 +148,39 @@ def _valid_day(value: Any) -> str:
     return text
 
 
-def preset_defaults(preset: str, *, default_min_ai: int = 70, today: str | None = None) -> dict[str, Any]:
+def preset_defaults(
+    preset: str, *, default_min_ai: int = 70, today: str | None = None,
+    default_sort: str = "ai",
+) -> dict[str, Any]:
     day = today or datetime.now(UTC).date().isoformat()
     base: dict[str, Any] = {
         "read": "all", "saved": "all", "ai": "all", "decision": "all",
-        "min_ai": 0, "source": 0, "from": "", "to": "", "sort": "ai",
+        "min_ai": 0, "source": 0, "from": "", "to": "",
+        "sort": default_sort if default_sort in _SORTS else "ai",
     }
     if preset == "best-unread":
         base.update(read="unread", ai="scored", decision="keep", min_ai=default_min_ai, sort="ai")
     elif preset == "catch-up":
-        base.update(read="unread", sort="ai")
+        base.update(read="unread")
     elif preset == "today":
-        base.update(**{"from": day, "to": day, "sort": "ai"})
+        base.update(**{"from": day, "to": day})
     elif preset == "awaiting-ai":
         base.update(ai="pending", sort="local")
     elif preset == "starred":
-        base.update(saved="starred", sort="ai")
-    elif preset in {"everything", "custom"}:
-        base.update(sort="ai")
+        base.update(saved="starred")
     return base
 
 
 def parse_review_filters(
     values: Mapping[str, Any], *, default_min_ai: int = 70, today: str | None = None,
+    default_preset: str = "best-unread", default_sort: str = "ai",
 ) -> dict[str, Any]:
-    preset = _choice(values.get("preset"), _PRESETS, "best-unread")
-    defaults = preset_defaults(preset, default_min_ai=default_min_ai, today=today)
+    fallback_preset = default_preset if default_preset in _PRESETS else "best-unread"
+    fallback_sort = default_sort if default_sort in _SORTS else "ai"
+    preset = _choice(values.get("preset"), _PRESETS, fallback_preset)
+    defaults = preset_defaults(
+        preset, default_min_ai=default_min_ai, today=today, default_sort=fallback_sort,
+    )
     page_size = _integer(values.get("page_size"), 25, minimum=10, maximum=50)
     if page_size not in _PAGE_SIZES:
         page_size = 25
@@ -508,6 +532,8 @@ def list_review_days(
             "is_arxiv": scope.is_arxiv,
             "preference_group_id": scope.preference_group_id,
             "review_display_mode": scope.review_display_mode,
+            "default_preset": default_review_preset(scope),
+            "default_sort": default_review_sort(scope),
         },
         "filters": dict(filters), "counts": counts, "sources": sources,
         "days": days, "default_open_day": default_open,

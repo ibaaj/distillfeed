@@ -10,18 +10,25 @@
     groupId: Number(document.querySelector('meta[name="selected-group-id"]')?.content || 0),
     feedId: Number(document.querySelector('meta[name="selected-feed-id"]')?.content || 0),
     preferenceGroupId: Number(document.querySelector('meta[name="review-preference-group-id"]')?.content || 0),
+    title: document.getElementById('items-scope-title')?.textContent?.trim() || '',
   };
   const defaultMinAI = Number(app.dataset.defaultMinAi || 70);
   const today = new Date().toISOString().slice(0, 10);
   const initialDisplayMode = State.normalizeDisplayMode(
     document.querySelector('meta[name="review-display-mode"]')?.content || 'daily',
   );
-  const options = { defaultMinAI, today, displayMode: initialDisplayMode };
+  const isArxivScope = document.querySelector('meta[name="arxiv-digest-scope"]')?.content === 'true';
+  const configuredDefaultPreset = document.querySelector('meta[name="review-default-preset"]')?.content || '';
+  const configuredDefaultSort = document.querySelector('meta[name="review-default-sort"]')?.content || '';
+  const options = {
+    defaultMinAI, today, displayMode: initialDisplayMode, isArxiv: isArxivScope,
+    defaultPreset: configuredDefaultPreset, defaultSort: configuredDefaultSort,
+  };
   const filterNames = ['preset', ...State.FILTER_FIELDS];
   const params = new URLSearchParams(location.search);
   const rawFilters = {};
   filterNames.forEach(name => { if (params.has(name)) rawFilters[name] = params.get(name); });
-  if (!Object.keys(rawFilters).length) rawFilters.preset = initialDisplayMode === 'direct' ? 'catch-up' : 'best-unread';
+  if (!Object.keys(rawFilters).length) rawFilters.preset = State.defaultPreset(options);
 
   const openStorageKey = `distillfeedReviewOpen:${scope.feedId ? `feed:${scope.feedId}` : `group:${scope.groupId}`}`;
   let restoredOpenDays = {};
@@ -208,13 +215,13 @@
     if (item.ai_state === 'scored' && item.decision === 'drop') return 'AI-ranked · dropped';
     if (item.ai_state === 'scored') return 'AI-ranked';
     if (item.ai_state === 'pending') return 'Awaiting AI';
-    return 'Not sent to AI';
+    return item.is_arxiv ? 'Not sent to AI' : 'Without AI score';
   }
 
   function scoreLabel(item) {
     if (item.ai_state === 'scored') return `AI ${item.ai_score}`;
     if (item.ai_state === 'pending') return 'AI pending';
-    return 'Not sent';
+    return item.is_arxiv ? 'Not sent' : '';
   }
 
   function detailSection(title, htmlValue, className = '') {
@@ -237,21 +244,17 @@
 
   function renderItem(item) {
     const open = Boolean(state.openItems[item.id]);
-    const sourceURL = safeHref(item.url);
-    const pdfURL = safeHref(item.pdf_url);
     const tags = (item.tags || []).map(tag => `<span class="review-tag">${escapeHTML(tag)}</span>`).join('');
     const readPending = Boolean(state.readMutations[item.id]);
-    const links = [
-      sourceURL ? `<a href="${escapeHTML(sourceURL)}" target="_blank" rel="noopener noreferrer" data-action="open-source" data-item-id="${item.id}">Open source</a>` : '',
-      pdfURL ? `<a href="${escapeHTML(pdfURL)}" target="_blank" rel="noopener noreferrer" data-action="open-source" data-item-id="${item.id}">Open PDF</a>` : '',
-    ].filter(Boolean).join('<span class="review-source-separator" aria-hidden="true">·</span>');
+    const resource = safeHref(item.url);
+    const title = resource
+      ? `<a class="review-item-title" href="${escapeHTML(resource)}" target="_blank" rel="noopener noreferrer" data-action="open-item-link" data-item-id="${item.id}">${escapeHTML(item.title)}</a>`
+      : `<span class="review-item-title">${escapeHTML(item.title)}</span>`;
+    const score = scoreLabel(item);
     return `<article class="review-item${item.is_read ? ' is-read' : ''}" data-item-id="${item.id}">
       <div class="review-item-main">
-        <span class="review-score review-score-${escapeHTML(item.ai_state)}">${escapeHTML(scoreLabel(item))}</span>
-        <button class="review-item-toggle" type="button" data-action="toggle-item" data-item-id="${item.id}" aria-expanded="${open}" aria-controls="review-item-details-${item.id}">
-          <span class="review-item-title">${escapeHTML(item.title)}</span>
-          <span class="review-item-caret" aria-hidden="true">›</span>
-        </button>
+        ${score ? `<span class="review-score review-score-${escapeHTML(item.ai_state)}">${escapeHTML(score)}</span>` : ''}
+        ${title}
         <div class="review-item-actions">
           <button type="button" data-action="star" data-item-id="${item.id}" aria-label="${item.is_starred ? 'Remove favorite' : 'Add favorite'}" class="review-icon-button${item.is_starred ? ' active' : ''}">★</button>
           <button type="button" data-action="read-later" data-item-id="${item.id}" aria-label="${item.is_read_later ? 'Remove from Read later' : 'Add to Read later'}" class="review-icon-button${item.is_read_later ? ' active' : ''}">↗</button>
@@ -261,7 +264,7 @@
           <span>${escapeHTML(item.feed_title)}</span>${item.author ? `<span>${escapeHTML(item.author)}</span>` : ''}${item.published_at ? `<time datetime="${escapeHTML(item.published_at)}">${escapeHTML(formatTimestamp(item.published_at))} UTC</time>` : ''}
           ${item.local_score !== null && item.local_score !== undefined ? `<span>Local ${escapeHTML(item.local_score)}</span>` : ''}
         </div>
-        <div class="review-item-secondary"><span class="review-tags">${tags}</span><span class="review-source-links">${links}</span></div>
+        <div class="review-item-secondary"><span class="review-tags">${tags}</span><button class="review-content-toggle" type="button" data-action="toggle-item" data-item-id="${item.id}" aria-expanded="${open}" aria-controls="review-item-details-${item.id}"><span>${escapeHTML(State.contentToggleLabel(open))}</span><span class="review-item-caret" aria-hidden="true">›</span></button></div>
       </div>
       <div id="review-item-details-${item.id}" class="review-item-details" ${open ? '' : 'hidden'}>${open ? renderItemDetails(item.id) : ''}</div>
     </article>`;
@@ -302,10 +305,10 @@
   }
 
   function daySummaryText(day) {
-    const parts = [`${day.matching.toLocaleString()} matching`, `${day.total.toLocaleString()} total`, `${day.unread.toLocaleString()} unread`];
+    const base = State.countSummary(day, state.filters, options);
+    const parts = [base];
     if (day.scored) parts.push(`${day.scored.toLocaleString()} AI-ranked`);
-    if (day.pending) parts.push(`${day.pending.toLocaleString()} awaiting AI`);
-    return parts.join(' · ');
+    return parts.filter(Boolean).join(' · ');
   }
 
   function cancelDirectLoadSchedule() {
@@ -370,7 +373,7 @@
         ${brief ? `<details class="review-daily-brief"><summary>Daily brief · ${Number(brief.selected_count || 0).toLocaleString()} selected</summary><div class="review-daily-brief-body review-markdown">${brief.html || ''}</div><footer>${escapeHTML(brief.model || '')}${brief.completed_at ? ` · ${escapeHTML(brief.completed_at)}` : ''}</footer></details>` : '<p class="review-no-brief">No daily brief is stored for this day.</p>'}
         <div class="review-day-actions">
           <button type="button" data-action="mark-visible-read" data-day="${escapeHTML(day.day)}">Mark loaded items read</button>
-          <button type="button" data-action="finish-day" data-day="${escapeHTML(day.day)}" data-total="${day.total}" data-hidden="${hiddenCount}" ${state.finishingDays[day.day] ? 'disabled' : ''}>${state.finishingDays[day.day] ? 'Finishing…' : 'Finish day'}</button>
+          <button type="button" data-action="mark-day-read" data-day="${escapeHTML(day.day)}" data-total="${day.total}" data-unread="${day.unread}" data-hidden="${hiddenCount}" ${(state.finishingDays[day.day] || !day.unread) ? 'disabled' : ''}>${escapeHTML(State.dayReadActionLabel(day.day, today, day.unread, Boolean(state.finishingDays[day.day])))}</button>
         </div>
         <div class="review-day-items" data-day-items="${escapeHTML(day.day)}"></div>
       </div>`;
@@ -405,7 +408,7 @@
       const counts = state.counts || {};
       resultStatus.textContent = state.status === 'loading' && !state.days.length
         ? 'Loading…'
-        : `${Number(counts.matching || 0).toLocaleString()} matching · ${Number(counts.total || 0).toLocaleString()} stored · ${Number(counts.pending || 0).toLocaleString()} awaiting AI`;
+        : State.countSummary(counts, state.filters, options);
     }
     renderDays();
   }
@@ -534,9 +537,15 @@
     } catch (error) { notify(error.message); }
   }
 
-  async function finishDay(day, total, hidden) {
-    if (state.finishingDays[day]) return;
-    const message = `Finish ${formatDay(day)}?\n\nThis marks all ${total.toLocaleString()} items from this day as read.${hidden ? ` ${hidden.toLocaleString()} are currently hidden by your filters.` : ''}`;
+  async function markDayRead(day, total, unread, hidden) {
+    if (state.finishingDays[day] || unread <= 0) return;
+    const dayName = day === today ? 'today' : formatDay(day);
+    const scopeName = scope.title ? ` in ${scope.title}` : '';
+    const itemWord = unread === 1 ? 'item' : 'items';
+    const hiddenNote = hidden
+      ? `\n\n${hidden.toLocaleString()} of the ${total.toLocaleString()} items are outside the current filters.`
+      : '';
+    const message = `Mark ${dayName} as read${scopeName}?\n\nThis marks ${unread.toLocaleString()} unread ${itemWord} from this day as read.${hiddenNote}`;
     if (!window.confirm(message)) return;
     transition({ type: 'FINISH_DAY_START', day });
     const body = {}; if (scope.feedId) body.feed_id = scope.feedId; else body.group_id = scope.groupId;
@@ -563,16 +572,18 @@
         method: 'PATCH', body: JSON.stringify({ review_display_mode: normalized }),
       });
       const appliedMode = State.normalizeDisplayMode(result.review_display_mode || normalized);
+      options.displayMode = appliedMode;
+      options.defaultPreset = isArxivScope
+        ? (appliedMode === 'direct' ? 'catch-up' : 'best-unread')
+        : 'everything';
       transition({ type: 'SET_DISPLAY_MODE', mode: appliedMode });
       persistOpenDays();
       notify(appliedMode === 'direct'
         ? 'Direct item list saved for this group'
         : 'Focused daily review saved for this group');
-      if (appliedMode === 'direct' && state.filters.preset === 'best-unread') {
-        refreshFilters(null, 'catch-up');
-      } else {
-        refreshFilters(state.filters);
-      }
+      // Display density and semantic filtering are independent choices.
+      // Changing the day layout must never silently hide or reveal items.
+      refreshFilters(state.filters);
     } catch (error) {
       if (displayControl) displayControl.value = state.displayMode;
       notify(error.message);
@@ -601,7 +612,7 @@
     refreshFilter(field, control.value);
   }));
   document.getElementById('review-reset')?.addEventListener('click', () => {
-    refreshFilters(null, state.displayMode === 'direct' ? 'catch-up' : 'best-unread');
+    refreshFilters(null, State.defaultPreset({ ...options, displayMode: state.displayMode }));
   });
 
   daysRoot?.addEventListener('click', event => {
@@ -625,10 +636,10 @@
       const item = Object.values(state.dayData).flatMap(data => data.items).find(candidate => Number(candidate.id) === itemId);
       if (item) changeBoolean(itemId, 'read-later', 'read_later', !item.is_read_later, item.is_read_later ? 'Removed from Read later' : 'Added to Read later');
     } else if (action === 'mark-visible-read') markVisibleRead(day);
-    else if (action === 'finish-day') finishDay(day, Number(button.dataset.total || 0), Number(button.dataset.hidden || 0));
-    else if (action === 'open-source') {
+    else if (action === 'mark-day-read') markDayRead(day, Number(button.dataset.total || 0), Number(button.dataset.unread || 0), Number(button.dataset.hidden || 0));
+    else if (action === 'open-item-link') {
       const item = Object.values(state.dayData).flatMap(data => data.items).find(candidate => Number(candidate.id) === itemId);
-      if (item && !item.is_read) changeRead(itemId);
+      if (item && !item.is_read) window.setTimeout(() => changeRead(itemId), 0);
     }
   });
 

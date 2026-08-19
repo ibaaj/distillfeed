@@ -30,12 +30,25 @@
     return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === text ? text : '';
   }
 
+  function defaultPreset(options = {}) {
+    const configured = String(options.defaultPreset || '').trim();
+    if (PRESETS.has(configured) && configured !== 'custom') return configured;
+    if (!options.isArxiv) return 'everything';
+    return normalizeDisplayMode(options.displayMode) === 'direct' ? 'catch-up' : 'best-unread';
+  }
+
+  function defaultSort(options = {}) {
+    const configured = String(options.defaultSort || '').trim();
+    if (SORT.has(configured)) return configured;
+    return options.isArxiv ? 'ai' : 'date';
+  }
+
   function presetDefaults(preset, options = {}) {
     const today = validDay(options.today) || new Date().toISOString().slice(0, 10);
     const defaultMinAI = clampInteger(options.defaultMinAI, 70, 0, 100);
     const base = {
       preset, q: '', read: 'all', saved: 'all', ai: 'all', decision: 'all',
-      min_ai: 0, source: 0, from: '', to: '', sort: 'ai', page_size: 25,
+      min_ai: 0, source: 0, from: '', to: '', sort: defaultSort(options), page_size: 25,
     };
     if (preset === 'best-unread') Object.assign(base, { read: 'unread', ai: 'scored', decision: 'keep', min_ai: defaultMinAI });
     else if (preset === 'catch-up') Object.assign(base, { read: 'unread' });
@@ -46,7 +59,7 @@
   }
 
   function normalizeFilters(input = {}, options = {}) {
-    const preset = PRESETS.has(String(input.preset || '')) ? String(input.preset) : 'best-unread';
+    const preset = PRESETS.has(String(input.preset || '')) ? String(input.preset) : defaultPreset(options);
     const defaults = presetDefaults(preset, options);
     const value = { ...defaults, ...input, preset };
     const page = clampInteger(value.page_size, 25, 10, 50);
@@ -69,6 +82,42 @@
       normalized.decision = 'all';
     }
     return normalized;
+  }
+
+  function hasActiveFilters(filters = {}, options = {}) {
+    const normalized = normalizeFilters(filters, options);
+    return Boolean(
+      normalized.q || normalized.read !== 'all' || normalized.saved !== 'all'
+      || normalized.ai !== 'all' || normalized.decision !== 'all'
+      || normalized.min_ai || normalized.source || normalized.from || normalized.to
+    );
+  }
+
+  function plural(count, singular, pluralValue = `${singular}s`) {
+    return `${count.toLocaleString()} ${count === 1 ? singular : pluralValue}`;
+  }
+
+  function countSummary(counts = {}, filters = {}, options = {}) {
+    const total = Number(counts.total || 0);
+    const matching = Number(counts.matching || 0);
+    const unread = Number(counts.unread || 0);
+    const parts = hasActiveFilters(filters, options)
+      ? [plural(matching, 'result'), `${total.toLocaleString()} total`, `${unread.toLocaleString()} unread overall`]
+      : [plural(total, 'item'), `${unread.toLocaleString()} unread`];
+    const pending = Number(counts.pending || 0);
+    if (pending) parts.push(`${pending.toLocaleString()} awaiting AI`);
+    return parts.join(' · ');
+  }
+
+  function contentToggleLabel(open = false) {
+    return open ? 'Hide content' : 'View content';
+  }
+
+  function dayReadActionLabel(day, today, unread, finishing = false) {
+    if (finishing) return 'Marking as read…';
+    const isToday = String(day || '') === String(today || '');
+    if (Number(unread || 0) <= 0) return isToday ? 'Today is read' : 'Day is read';
+    return isToday ? 'Mark today as read' : 'Mark day as read';
   }
 
   function normalizeDisplayMode(value) {
@@ -264,12 +313,16 @@
       }
       case 'FINISH_DAY_FAIL': {
         const finishingDays = { ...state.finishingDays }; delete finishingDays[action.day];
-        return { ...state, finishingDays, error: action.error || 'The day could not be finished' };
+        return { ...state, finishingDays, error: action.error || 'The day could not be marked as read' };
       }
       default:
         return state;
     }
   }
 
-  return { FILTER_FIELDS, presetDefaults, normalizeFilters, normalizeDisplayMode, initialState, reducer };
+  return {
+    FILTER_FIELDS, presetDefaults, defaultPreset, defaultSort, normalizeFilters,
+    hasActiveFilters, countSummary, contentToggleLabel, dayReadActionLabel,
+    normalizeDisplayMode, initialState, reducer,
+  };
 }));

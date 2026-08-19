@@ -69,6 +69,8 @@ from .plugins import (
 )
 from .presentation import render_summary_markdown
 from .review import (
+    default_review_preset,
+    default_review_sort,
     finish_review_day,
     list_review_day_items,
     list_review_days,
@@ -746,6 +748,12 @@ def _page_data(
         "scope_summary_item_budget": scope_summary_item_budget,
         "review_preference_group_id": review_preference_group_id,
         "review_display_mode": review_display_mode,
+        "review_default_preset": (
+            "everything" if not is_arxiv_scope
+            else "catch-up" if review_display_mode == "direct"
+            else "best-unread"
+        ),
+        "review_default_sort": "ai" if is_arxiv_scope else "date",
         "summary_minimum_relevance": int(config.get("llm", "minimum_relevance", 70)),
         "summary_evidence_hours": int(config.get("llm", "rolling_digest_hours", 24)),
         "scope_pending_items": scope_pending_items,
@@ -1273,11 +1281,13 @@ def create_app(config_path: str | None = None) -> Flask:
     def review_days():
         try:
             minimum = int(config.get("llm", "minimum_relevance", 70))
-            filters = parse_review_filters(
-                request.args, default_min_ai=minimum,
-            )
             with connect(config.database_path) as connection:
                 scope = _review_scope(connection)
+                filters = parse_review_filters(
+                    request.args, default_min_ai=minimum,
+                    default_preset=default_review_preset(scope),
+                    default_sort=default_review_sort(scope),
+                )
                 result = list_review_days(
                     connection, scope, filters, minimum_relevance=minimum,
                 )
@@ -1291,11 +1301,13 @@ def create_app(config_path: str | None = None) -> Flask:
     def review_day_items(day: str):
         try:
             minimum = int(config.get("llm", "minimum_relevance", 70))
-            filters = parse_review_filters(
-                request.args, default_min_ai=minimum,
-            )
             with connect(config.database_path) as connection:
                 scope = _review_scope(connection)
+                filters = parse_review_filters(
+                    request.args, default_min_ai=minimum,
+                    default_preset=default_review_preset(scope),
+                    default_sort=default_review_sort(scope),
+                )
                 result = list_review_day_items(
                     connection, scope, day, filters, minimum_relevance=minimum,
                     cursor=str(request.args.get("cursor") or ""),

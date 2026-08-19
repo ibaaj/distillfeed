@@ -1555,7 +1555,7 @@
   });
   if ('serviceWorker' in navigator) {
     const offline = document.querySelector('meta[name="offline-cache-enabled"]')?.content === 'true';
-    if (offline) navigator.serviceWorker.register('/static/service-worker.js?v=0.24.1-final').catch(() => {});
+    if (offline) navigator.serviceWorker.register('/static/service-worker.js?v=0.24.2-title-content1').catch(() => {});
     else Promise.all([
       navigator.serviceWorker.getRegistrations().then(registrations => Promise.all(
         registrations.map(registration => registration.unregister())
