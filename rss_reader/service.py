@@ -177,7 +177,7 @@ def run_refresh(
                 connection.execute(
                     "DELETE FROM tags WHERE NOT EXISTS (SELECT 1 FROM item_tags WHERE item_tags.tag_id=tags.id)"
                 )
-        status = "success" if stats["failed"] == 0 else "partial"
+        status = "success" if stats["failed"] == 0 and int(stats.get("deferred", 0)) == 0 else "partial"
         connection.execute(
             """UPDATE refresh_runs SET completed_at=?, status=?, feeds_attempted=?,
                feeds_succeeded=?, new_items=? WHERE id=?""",

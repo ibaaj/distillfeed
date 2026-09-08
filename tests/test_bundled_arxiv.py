@@ -145,6 +145,12 @@ def test_arxiv_reranker_contract_makes_duplicate_ids_unrepresentable(configured)
     assert captured["instructions"].rfind("authoritative output contract") > captured[
         "instructions"
     ].rfind('"items"')
+    assert "Judge each paper independently" in captured["instructions"]
+    assert "90-100: core match" in captured["instructions"]
+    request_payload = json.loads(captured["input"])
+    assert request_payload["rubric_version"] == "arxiv-relevance-bands-1"
+    assert all("local_score" not in candidate for candidate in request_payload["papers"])
+    assert all("local_reasons" in candidate for candidate in request_payload["papers"])
 
 
 def test_arxiv_reranker_rejects_legacy_duplicate_array(configured):
@@ -1307,3 +1313,147 @@ def test_arxiv_items_keep_common_states_and_pushes_are_duplicate_safe(configured
     assert first["delivered"] == 1
     assert second["duplicates"] == 1
     assert len(sent) == 1
+
+
+
+def test_arxiv_merge_preserves_rss_announcement_and_api_submission_dates():
+    announced = datetime(2026, 9, 8, 0, 0, tzinfo=UTC)
+    submitted = datetime(2026, 9, 5, 11, 30, tzinfo=UTC)
+    updated = datetime(2026, 9, 7, 18, 0, tzinfo=UTC)
+    rss = Paper(
+        arxiv_id="2609.00001", version="v1", title="RSS title", abstract="RSS abstract",
+        authors=["A"], categories=["cs.AI"], primary_category="cs.AI",
+        link="https://arxiv.org/abs/2609.00001", pdf_link=None,
+        published=announced, updated=None, source="rss", announce_type="new",
+        source_categories=["cs.AI"], announced_at=announced, announcement_source="rss",
+    )
+    api = Paper(
+        arxiv_id="2609.00001", version="v1", title="API title", abstract="API abstract",
+        authors=["A", "B"], categories=["cs.AI", "cs.LG"], primary_category="cs.AI",
+        link="https://arxiv.org/abs/2609.00001v1",
+        pdf_link="https://arxiv.org/pdf/2609.00001v1.pdf",
+        published=submitted, updated=updated, source="api", source_categories=["cs.AI"],
+        submitted_at=submitted,
+    )
+
+    merged = fetch_module.merge_papers([rss], [api])
+
+    assert len(merged) == 1
+    value = merged[0]
+    assert value.source == "api+rss"
+    assert value.submitted_at == submitted
+    assert value.updated == updated
+    assert value.announced_at == announced
+    assert value.announcement_source == "rss"
+    assert value.title == "API title"
+
+
+def test_api_only_arxiv_date_remains_unknown_across_restart_and_rss_repairs_it(configured):
+    connection = connect(configured.database_path)
+    plugin = ArxivDigestPlugin()
+    plugin.initialize(connection, configured)
+    group_id = int(connection.execute(
+        "SELECT value FROM distillfeed_arxiv_state WHERE key='group_id'"
+    ).fetchone()[0])
+    feed_id = int(connection.execute(
+        "SELECT id FROM feeds WHERE group_id=? ORDER BY id LIMIT 1", (group_id,)
+    ).fetchone()[0])
+    submitted = datetime(2026, 9, 5, 11, 30, tzinfo=UTC)
+    api = Paper(
+        arxiv_id="2609.00002", version="v1", title="API paper", abstract="Abstract",
+        authors=["A"], categories=["cs.AI"], primary_category="cs.AI",
+        link="https://arxiv.org/abs/2609.00002v1",
+        pdf_link="https://arxiv.org/pdf/2609.00002v1.pdf",
+        published=submitted, updated=submitted, source="api", source_categories=["cs.AI"],
+        submitted_at=submitted,
+    )
+    item_id, created, _ = plugin_module._store_paper(connection, api, feed_id)
+    assert created is True
+    connection.execute(
+        """UPDATE distillfeed_arxiv_papers SET local_score=4,llm_score=82,
+           final_score=32.7,decision='keep',why='Legacy score',evaluation_status='complete',
+           evaluated_at='2026-09-08T01:00:00+00:00' WHERE item_id=?""",
+        (item_id,),
+    )
+
+    plugin.initialize(connection, configured)
+    plugin.initialize(connection, configured)
+    stored = connection.execute(
+        "SELECT * FROM distillfeed_arxiv_papers WHERE item_id=?", (item_id,)
+    ).fetchone()
+    item = connection.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
+    assert stored["submitted_at"].startswith("2026-09-05")
+    assert stored["announced_at"] is None
+    assert stored["announcement_day"] is None
+    assert stored["announcement_source"] == "unknown"
+    assert stored["llm_score"] == 82
+    assert item["date_warning"] == "arxiv-announcement-unknown"
+
+    announced = datetime(2026, 9, 8, 0, 0, tzinfo=UTC)
+    rss = Paper(
+        arxiv_id="2609.00002", version=None, title="RSS paper", abstract="Abstract",
+        authors=["A"], categories=["cs.AI"], primary_category="cs.AI",
+        link="https://arxiv.org/abs/2609.00002", pdf_link=None,
+        published=announced, updated=None, source="rss", announce_type="new",
+        source_categories=["cs.AI"], announced_at=announced, announcement_source="rss",
+    )
+    same_id, created, revised = plugin_module._store_paper(connection, rss, feed_id)
+    assert (same_id, created, revised) == (item_id, False, False)
+    repaired = connection.execute(
+        "SELECT * FROM distillfeed_arxiv_papers WHERE item_id=?", (item_id,)
+    ).fetchone()
+    repaired_item = connection.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
+    assert repaired["version"] == "v1"
+    assert repaired["submitted_at"].startswith("2026-09-05")
+    assert repaired["announced_at"].startswith("2026-09-08")
+    assert repaired["announcement_day"] == "2026-09-08"
+    assert repaired["announcement_source"] == "rss"
+    assert repaired["llm_score"] == 82
+    assert repaired_item["date_warning"] is None
+    connection.close()
+
+
+def test_legacy_weekend_arxiv_migration_preserves_score_and_is_idempotent(configured):
+    connection = connect(configured.database_path)
+    plugin = ArxivDigestPlugin()
+    plugin.initialize(connection, configured)
+    group_id = int(connection.execute(
+        "SELECT value FROM distillfeed_arxiv_state WHERE key='group_id'"
+    ).fetchone()[0])
+    feed_id = int(connection.execute(
+        "SELECT id FROM feeds WHERE group_id=? ORDER BY id LIMIT 1", (group_id,)
+    ).fetchone()[0])
+    item_id = int(connection.execute(
+        """INSERT INTO items(feed_id,stable_id,title,url,published_at,source_published_at,
+               discovered_at,description_text,summary_eligible)
+           VALUES(?,?,?,?,?,?,?,?,0)""",
+        (feed_id, "legacy-weekend", "Legacy weekend", "https://arxiv.org/abs/2609.00003",
+         "2026-09-05T11:30:00+00:00", "2026-09-05T11:30:00+00:00",
+         "2026-09-08T00:00:00+00:00", "Abstract"),
+    ).lastrowid)
+    connection.execute(
+        """INSERT INTO distillfeed_arxiv_papers(
+               item_id,arxiv_id,version,categories_json,source,local_score,llm_score,
+               final_score,decision,why,evaluation_status,evaluated_at)
+           VALUES(?,?,'v1','[\"cs.AI\"]','api+rss',4,88,34.8,'keep','Stored',
+                  'complete','2026-09-08T01:00:00+00:00')""",
+        (item_id, "2609.00003"),
+    )
+
+    plugin.initialize(connection, configured)
+    first = dict(connection.execute(
+        "SELECT * FROM distillfeed_arxiv_papers WHERE item_id=?", (item_id,)
+    ).fetchone())
+    plugin.initialize(connection, configured)
+    second = dict(connection.execute(
+        "SELECT * FROM distillfeed_arxiv_papers WHERE item_id=?", (item_id,)
+    ).fetchone())
+    assert second == first
+    assert first["announcement_day"] is None
+    assert first["announcement_source"] == "unknown"
+    assert first["llm_score"] == 88
+    assert first["evaluation_status"] == "complete"
+    assert first["score_model"] == "legacy-unknown"
+    assert first["score_prompt_version"] == "legacy"
+    assert first["score_rubric_version"] == "legacy-unanchored"
+    connection.close()

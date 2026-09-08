@@ -229,6 +229,23 @@
     return `<section class="review-detail-section ${className}"><h4>${escapeHTML(title)}</h4><div class="review-markdown">${htmlValue}</div></section>`;
   }
 
+  function itemBadges(item) {
+    const badges = [];
+    if (item.content_kind === 'youtube-short') {
+      badges.push('<span class="review-kind-badge review-kind-youtube-short" title="Explicit YouTube Shorts URL">Shorts</span>');
+    }
+    const warnings = {
+      'future-source-date': ['Future source date', 'The feed supplied a future timestamp; this item is ordered by retrieval time.'],
+      'arxiv-announcement-unknown': ['Announcement date unknown', 'This arXiv paper was recovered from API metadata without a verified announcement date.'],
+      'arxiv-announcement-unverified': ['Date unverified', 'This legacy arXiv date came from API metadata and is not a verified announcement timestamp.'],
+    };
+    const warning = warnings[item.date_warning];
+    if (warning) {
+      badges.push(`<span class="review-kind-badge review-date-warning" title="${escapeHTML(warning[1])}">${escapeHTML(warning[0])}</span>`);
+    }
+    return badges.join('');
+  }
+
   function renderItemDetails(itemId) {
     const detail = state.itemDetails[itemId];
     if (!detail || detail.status === 'loading') return '<div class="review-detail-loading">Loading item details…</div>';
@@ -247,9 +264,10 @@
     const tags = (item.tags || []).map(tag => `<span class="review-tag">${escapeHTML(tag)}</span>`).join('');
     const readPending = Boolean(state.readMutations[item.id]);
     const resource = safeHref(item.url);
-    const title = resource
+    const titleLink = resource
       ? `<a class="review-item-title" href="${escapeHTML(resource)}" target="_blank" rel="noopener noreferrer" data-action="open-item-link" data-item-id="${item.id}">${escapeHTML(item.title)}</a>`
       : `<span class="review-item-title">${escapeHTML(item.title)}</span>`;
+    const title = `<div class="review-item-title-line">${titleLink}${itemBadges(item)}</div>`;
     const score = scoreLabel(item);
     return `<article class="review-item${item.is_read ? ' is-read' : ''}" data-item-id="${item.id}">
       <div class="review-item-main">

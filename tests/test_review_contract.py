@@ -105,10 +105,16 @@ def test_filter_toolbar_frontend_backend_contract_is_complete():
     assert ".review-content-toggle" in stylesheet
     assert ".review-source-links" not in stylesheet
     assert "Stored item summary" not in script
+    assert "item.content_kind === 'youtube-short'" in script
+    assert ">Shorts</span>" in script
+    assert "future-source-date" in script
+    assert "arxiv-announcement-unknown" in script
+    assert ".review-kind-youtube-short" in stylesheet
+    assert ".review-date-warning" in stylesheet
     assert "block.items" not in template
-    assert "v='0.24.2-title-content1'" in template
-    assert "service-worker.js?v=0.24.2-title-content1" in (
+    assert "v='0.24.3-reliability1'" in template
+    assert "service-worker.js?v=0.24.3-reliability1" in (
         ROOT / "rss_reader" / "static" / "app.js"
     ).read_text("utf-8")
-    assert "distillfeed-v242-title-content1" in service_worker
-    assert "?v=0.24.2-title-content1" in service_worker
+    assert "distillfeed-v243-reliability1" in service_worker
+    assert "?v=0.24.3-reliability1" in service_worker

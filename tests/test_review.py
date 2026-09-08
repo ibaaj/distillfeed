@@ -32,6 +32,11 @@ CREATE TABLE distillfeed_arxiv_papers (
     pdf_url TEXT,
     announce_type TEXT,
     source TEXT NOT NULL,
+    submitted_at TEXT,
+    updated_at TEXT,
+    announced_at TEXT,
+    announcement_day TEXT,
+    announcement_source TEXT,
     local_score INTEGER,
     llm_score INTEGER,
     final_score REAL,
@@ -40,7 +45,13 @@ CREATE TABLE distillfeed_arxiv_papers (
     tags_json TEXT NOT NULL DEFAULT '[]',
     local_reasons_json TEXT NOT NULL DEFAULT '[]',
     evaluation_status TEXT NOT NULL DEFAULT 'pending',
-    evaluated_at TEXT
+    evaluated_at TEXT,
+    score_model TEXT,
+    score_prompt_version TEXT,
+    score_rubric_version TEXT,
+    score_input_fingerprint TEXT,
+    score_batch_id TEXT,
+    score_paper_version TEXT
 );
 """
 
@@ -105,7 +116,8 @@ def _build_database(path: Path) -> None:
                 status = "screened_out"
             arxiv_rows.append((
                 identifier, f"2608.{identifier:05d}", "v1", '["cs.AI"]', "cs.AI",
-                f"https://arxiv.org/pdf/2608.{identifier:05d}", "new", "rss", local,
+                f"https://arxiv.org/pdf/2608.{identifier:05d}", "new", "rss",
+                None, published, published, day, "rss", local,
                 score, float(local + (score or 0) * 0.35) if score is not None else None,
                 decision, f"Relevance rationale for paper {identifier}" if score is not None else "",
                 json.dumps(["reasoning", f"tag-{identifier % 5}"]),
@@ -122,9 +134,10 @@ def _build_database(path: Path) -> None:
         connection.executemany(
             """INSERT INTO distillfeed_arxiv_papers(
                    item_id,arxiv_id,version,categories_json,primary_category,pdf_url,
-                   announce_type,source,local_score,llm_score,final_score,decision,why,
+                   announce_type,source,submitted_at,updated_at,announced_at,announcement_day,
+                   announcement_source,local_score,llm_score,final_score,decision,why,
                    tags_json,local_reasons_json,evaluation_status,evaluated_at
-               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             arxiv_rows,
         )
 

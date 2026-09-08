@@ -231,7 +231,11 @@ def _review_rows(
             ap.item_id AS arxiv_item_id,ap.arxiv_id,ap.pdf_url,ap.local_score,
             ap.llm_score,ap.final_score,ap.decision AS arxiv_decision,
             ap.why AS arxiv_why,ap.tags_json AS arxiv_tags_json,
-            ap.local_reasons_json,ap.evaluation_status
+            ap.local_reasons_json,ap.evaluation_status,ap.submitted_at,
+            ap.updated_at AS arxiv_updated_at,ap.announced_at,ap.announcement_day,
+            ap.announcement_source,ap.score_model,ap.score_prompt_version,
+            ap.score_rubric_version,ap.score_input_fingerprint,ap.score_batch_id,
+            ap.score_paper_version
         """
         arxiv_join = "LEFT JOIN distillfeed_arxiv_papers ap ON ap.item_id=i.id"
     else:
@@ -239,11 +243,15 @@ def _review_rows(
             NULL AS arxiv_item_id,NULL AS arxiv_id,NULL AS pdf_url,NULL AS local_score,
             NULL AS llm_score,NULL AS final_score,NULL AS arxiv_decision,
             NULL AS arxiv_why,NULL AS arxiv_tags_json,NULL AS local_reasons_json,
-            NULL AS evaluation_status
+            NULL AS evaluation_status,NULL AS submitted_at,NULL AS arxiv_updated_at,
+            NULL AS announced_at,NULL AS announcement_day,NULL AS announcement_source,
+            NULL AS score_model,NULL AS score_prompt_version,NULL AS score_rubric_version,
+            NULL AS score_input_fingerprint,NULL AS score_batch_id,NULL AS score_paper_version
         """
         arxiv_join = ""
     rows = connection.execute(
-        f"""SELECT i.id,i.feed_id,i.title,i.url,i.author,i.published_at,i.discovered_at,
+        f"""SELECT i.id,i.feed_id,i.title,i.url,i.author,i.published_at,i.source_published_at,
+                    i.discovered_at,i.date_warning,i.content_kind,i.content_kind_source,
                     i.description_text,i.summary_eligible,i.is_read,i.is_starred,i.is_read_later,
                     f.title AS feed_title,f.group_id,f.xml_url,f.llm_enabled,
                     eval.relevance AS ordinary_ai_score,eval.description AS ordinary_ai_summary,
@@ -296,8 +304,16 @@ def _review_rows(
             decision = stored_decision if stored_decision in {"keep", "drop"} else (
                 "keep" if int(ai_score) >= minimum_relevance else "drop"
             )
-        stamp = str(row["published_at"] or row["discovered_at"] or "")
-        day = stamp[:10] if _DAY.fullmatch(stamp[:10]) else "undated"
+        if is_arxiv:
+            stamp = str(
+                row["announced_at"] or row["submitted_at"]
+                or row["published_at"] or row["discovered_at"] or ""
+            )
+            candidate_day = str(row["announcement_day"] or "")
+            day = candidate_day if _DAY.fullmatch(candidate_day) else "undated"
+        else:
+            stamp = str(row["published_at"] or row["discovered_at"] or "")
+            day = stamp[:10] if _DAY.fullmatch(stamp[:10]) else "undated"
         arxiv_tags = _json_list(row["arxiv_tags_json"])
         user_tags = [part.strip() for part in str(row["user_tags"] or "").split(" · ") if part.strip()]
         tags = list(dict.fromkeys([*arxiv_tags, *user_tags]))
@@ -307,12 +323,17 @@ def _review_rows(
         search_text = " ".join([
             str(row["title"] or ""), str(row["author"] or ""), str(row["feed_title"] or ""),
             " ".join(tags), why, ai_summary, str(row["description_text"] or ""),
-            str(row["arxiv_id"] or ""),
+            str(row["arxiv_id"] or ""), str(row["content_kind"] or ""),
         ]).casefold()
         result.append({
             "id": int(row["id"]), "feed_id": int(row["feed_id"]), "feed_title": str(row["feed_title"]),
             "title": str(row["title"]), "url": str(row["url"] or ""), "author": str(row["author"] or ""),
-            "published_at": stamp, "day": day, "description_text": str(row["description_text"] or ""),
+            "published_at": stamp, "source_published_at": str(row["source_published_at"] or ""),
+            "discovered_at": str(row["discovered_at"] or ""), "day": day,
+            "date_warning": str(row["date_warning"] or ""),
+            "content_kind": str(row["content_kind"] or ""),
+            "content_kind_source": str(row["content_kind_source"] or ""),
+            "description_text": str(row["description_text"] or ""),
             "is_read": bool(row["is_read"]), "is_starred": bool(row["is_starred"]),
             "is_read_later": bool(row["is_read_later"]), "tags": tags,
             "ai_state": ai_state, "ai_score": ai_score, "decision": decision,
@@ -320,6 +341,15 @@ def _review_rows(
             "why": why, "ai_summary": ai_summary, "story_cluster": story_cluster,
             "is_arxiv": is_arxiv, "arxiv_id": str(row["arxiv_id"] or ""),
             "pdf_url": str(row["pdf_url"] or ""), "local_reasons": _json_list(row["local_reasons_json"]),
+            "submitted_at": str(row["submitted_at"] or ""),
+            "announced_at": str(row["announced_at"] or ""),
+            "announcement_source": str(row["announcement_source"] or ""),
+            "score_model": str(row["score_model"] or ""),
+            "score_prompt_version": str(row["score_prompt_version"] or ""),
+            "score_rubric_version": str(row["score_rubric_version"] or ""),
+            "score_input_fingerprint": str(row["score_input_fingerprint"] or ""),
+            "score_batch_id": str(row["score_batch_id"] or ""),
+            "score_paper_version": str(row["score_paper_version"] or ""),
             "search_text": search_text,
         })
     return result
@@ -431,14 +461,25 @@ def _daily_briefs(connection: sqlite3.Connection, scope: ReviewScope) -> dict[st
     if scope.kind == "feed":
         where = f"({where} OR s.scope_feed_id=?)"
         parameters.append(scope.scope_id)
+    use_arxiv_day = scope.is_arxiv and _table_exists(connection, "distillfeed_arxiv_papers")
+    arxiv_join = (
+        "JOIN distillfeed_arxiv_papers ap ON ap.item_id=i.id"
+        if use_arxiv_day else ""
+    )
+    day_expression = (
+        "COALESCE(ap.announcement_day,'undated')"
+        if use_arxiv_day
+        else "substr(COALESCE(i.published_at,i.discovered_at),1,10)"
+    )
     rows = connection.execute(
         f"""SELECT s.id,s.overview,s.sections_json,lr.model,lr.completed_at,
                     SUM(CASE WHEN si.included=1 THEN 1 ELSE 0 END) AS selected_count,
-                    MIN(substr(COALESCE(i.published_at,i.discovered_at),1,10)) AS first_day,
-                    MAX(substr(COALESCE(i.published_at,i.discovered_at),1,10)) AS last_day
+                    MIN({day_expression}) AS first_day,
+                    MAX({day_expression}) AS last_day
                FROM summaries s JOIN llm_runs lr ON lr.id=s.llm_run_id
                JOIN summary_items si ON si.summary_id=s.id
                JOIN items i ON i.id=si.item_id
+               {arxiv_join}
               WHERE lr.status='success' AND {where}
               GROUP BY s.id
              HAVING first_day=last_day
@@ -572,7 +613,9 @@ def list_review_day_items(
         compact.append({
             "id": item["id"], "feed_id": item["feed_id"], "feed_title": item["feed_title"],
             "title": item["title"], "url": item["url"], "author": item["author"],
-            "published_at": item["published_at"], "day": item["day"],
+            "published_at": item["published_at"], "source_published_at": item["source_published_at"],
+            "day": item["day"], "date_warning": item["date_warning"],
+            "content_kind": item["content_kind"], "content_kind_source": item["content_kind_source"],
             "is_read": item["is_read"], "is_starred": item["is_starred"],
             "is_read_later": item["is_read_later"], "tags": item["tags"],
             "ai_state": item["ai_state"], "ai_score": item["ai_score"],
@@ -647,6 +690,18 @@ def review_item_details(
         "local_rationale_html": local_html,
         "url": item["url"], "pdf_url": item["pdf_url"],
         "is_arxiv": item["is_arxiv"], "tags": item["tags"],
+        "date_warning": item["date_warning"],
+        "source_published_at": item["source_published_at"],
+        "discovered_at": item["discovered_at"],
+        "content_kind": item["content_kind"],
+        "announcement_source": item["announcement_source"],
+        "submitted_at": item["submitted_at"],
+        "announced_at": item["announced_at"],
+        "score_model": item["score_model"],
+        "score_prompt_version": item["score_prompt_version"],
+        "score_rubric_version": item["score_rubric_version"],
+        "score_batch_id": item["score_batch_id"],
+        "score_paper_version": item["score_paper_version"],
     }
 
 
@@ -660,21 +715,30 @@ def finish_review_day(
     if not scope.feed_ids:
         return {"status": "ok", "day": day, "matched": 0, "changed": 0, "unread": 0}
     marks = ",".join("?" for _ in scope.feed_ids)
-    day_expression = "substr(COALESCE(published_at,discovered_at),1,10)=?" if day != "undated" else "substr(COALESCE(published_at,discovered_at),1,10) NOT GLOB '????-??-??'"
-    day_params: list[Any] = [day] if day != "undated" else []
+    parameters: list[Any] = list(scope.feed_ids)
+    if scope.is_arxiv and _table_exists(connection, "distillfeed_arxiv_papers"):
+        day_expression = (
+            "id IN (SELECT item_id FROM distillfeed_arxiv_papers "
+            "WHERE COALESCE(announcement_day,'undated')=?)"
+        )
+        parameters.append(day)
+    else:
+        day_expression = (
+            "substr(COALESCE(published_at,discovered_at),1,10)=?"
+            if day != "undated"
+            else "substr(COALESCE(published_at,discovered_at),1,10) NOT GLOB '????-??-??'"
+        )
+        if day != "undated":
+            parameters.append(day)
+    where = f"feed_id IN ({marks}) AND {day_expression}"
     matched = int(connection.execute(
-        f"SELECT COUNT(*) FROM items WHERE feed_id IN ({marks}) AND {day_expression}",
-        [*scope.feed_ids, *day_params],
+        f"SELECT COUNT(*) FROM items WHERE {where}", parameters,
     ).fetchone()[0])
     cursor = connection.execute(
-        f"""UPDATE items SET is_read=1
-              WHERE is_read=0 AND feed_id IN ({marks}) AND {day_expression}""",
-        [*scope.feed_ids, *day_params],
+        f"UPDATE items SET is_read=1 WHERE is_read=0 AND {where}", parameters,
     )
     unread = int(connection.execute(
-        f"""SELECT COUNT(*) FROM items
-              WHERE is_read=0 AND feed_id IN ({marks}) AND {day_expression}""",
-        [*scope.feed_ids, *day_params],
+        f"SELECT COUNT(*) FROM items WHERE is_read=0 AND {where}", parameters,
     ).fetchone()[0])
     return {
         "status": "ok", "day": day, "matched": matched,

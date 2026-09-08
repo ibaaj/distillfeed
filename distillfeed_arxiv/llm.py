@@ -13,6 +13,7 @@ from .models import Decision, LocalScore, Paper
 
 LOGGER = logging.getLogger(__name__)
 TRANSIENT_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504}
+RUBRIC_VERSION = "arxiv-relevance-bands-1"
 
 
 @dataclass(frozen=True)
@@ -60,16 +61,22 @@ def _client(cfg: dict[str, Any]) -> OpenAI:
     return OpenAI(api_key=api_key, max_retries=0)
 
 
-def _paper_payload(paper: Paper, local: LocalScore, abstract_chars: int = 1800) -> dict[str, Any]:
-    return {
+def _paper_payload(
+    paper: Paper, local: LocalScore, abstract_chars: int = 1800, *,
+    include_local_score: bool = True,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "arxiv_id": paper.arxiv_id,
+        "version": paper.version or "",
         "title": paper.title,
         "abstract": paper.abstract[:abstract_chars],
         "authors": paper.authors,
         "categories": paper.categories,
-        "local_score": local.score,
         "local_reasons": local.reasons,
     }
+    if include_local_score:
+        payload["local_score"] = local.score
+    return payload
 
 
 def _decode_response(response: Any, operation: str) -> dict[str, Any]:
@@ -153,7 +160,7 @@ def _rerank_batch(
     filters = cfg["filters"]
     payload = {
         "papers": [
-            {"response_key": key, **_paper_payload(paper, local)}
+            {"response_key": key, **_paper_payload(paper, local, include_local_score=False)}
             for key, (paper, local) in zip(response_keys, selected, strict=True)
         ],
         "topic_lexicon": {
@@ -161,9 +168,21 @@ def _rerank_batch(
             "medium": filters.get("positive_keywords_medium", []),
             "negative": filters.get("negative_keywords", []),
         },
+        "rubric_version": RUBRIC_VERSION,
     }
     instructions = str(cfg["llm"]["system_prompt"]).rstrip() + (
-        "\n\nThe application-provided JSON Schema is the authoritative output contract. "
+        "\n\nUse this fixed absolute relevance rubric for every paper:\n"
+        "90-100: core match; the paper directly advances the reader's central interests.\n"
+        "75-89: strong match; substantial direct relevance.\n"
+        "60-74: relevant; clearly useful but not central.\n"
+        "40-59: adjacent; a meaningful but indirect connection.\n"
+        "20-39: weak or peripheral connection.\n"
+        "0-19: out of scope.\n"
+        "Judge each paper independently against this rubric. Do not rank papers relative to "
+        "the other papers in the request, and do not change the scale because a batch is "
+        "unusually strong or weak. The supplied local_reasons are retrieval evidence only; "
+        "they are not a required score floor.\n\n"
+        "The application-provided JSON Schema is the authoritative output contract. "
         "Ignore any older output-shape example above. Return one result for every supplied "
         "response_key, using that exact key in the results object."
     )

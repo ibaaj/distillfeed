@@ -1709,14 +1709,17 @@ def create_app(config_path: str | None = None) -> Flask:
                         f"""SELECT i.*,f.title AS feed_title,g.title AS group_title,
                                   ap.llm_score AS rank_score,ap.why AS rank_rationale,
                                   'ArXiv AI score' AS rank_label,ap.local_score,
-                                  ap.final_score,ap.primary_category
+                                  ap.final_score,ap.primary_category,ap.announced_at,
+                                  ap.submitted_at,ap.announcement_day,ap.announcement_source
                              FROM distillfeed_arxiv_papers ap
                              JOIN items i ON i.id=ap.item_id
                              JOIN feeds f ON f.id=i.feed_id
                              JOIN groups g ON g.id=f.group_id
                              WHERE ap.llm_score IS NOT NULL AND {category_sql}
                              ORDER BY ap.llm_score DESC,ap.final_score DESC,
-                                      COALESCE(i.published_at,i.discovered_at) DESC,i.id DESC
+                                      ap.announcement_day IS NULL,
+                                      COALESCE(ap.announced_at,ap.submitted_at,i.published_at,i.discovered_at) DESC,
+                                      i.id DESC
                              LIMIT ? OFFSET ?""",
                         [*category_parameters, page_size, (page - 1) * page_size],
                     ).fetchall()
@@ -1742,18 +1745,22 @@ def create_app(config_path: str | None = None) -> Flask:
         query = str(request.args.get("q", "")).strip()[:200]
         selected_category = str(request.args.get("category", "")).strip()[:40]
         selected_sort = str(request.args.get("sort", "newest")).strip().casefold()
+        arxiv_date_order = (
+            "ap.announcement_day IS NULL,"
+            "COALESCE(ap.announced_at,ap.submitted_at,i.published_at,i.discovered_at)"
+        )
         sort_options = {
-            "newest": "COALESCE(i.published_at,i.discovered_at) DESC,i.id DESC",
-            "oldest": "COALESCE(i.published_at,i.discovered_at) ASC,i.id ASC",
-            "ai-high": "ap.llm_score IS NULL,ap.llm_score DESC,COALESCE(i.published_at,i.discovered_at) DESC",
-            "ai-low": "ap.llm_score IS NULL,ap.llm_score ASC,COALESCE(i.published_at,i.discovered_at) DESC",
-            "local-high": "ap.local_score IS NULL,ap.local_score DESC,COALESCE(i.published_at,i.discovered_at) DESC",
-            "local-low": "ap.local_score IS NULL,ap.local_score ASC,COALESCE(i.published_at,i.discovered_at) DESC",
-            "combined-high": "ap.final_score IS NULL,ap.final_score DESC,COALESCE(i.published_at,i.discovered_at) DESC",
-            "combined-low": "ap.final_score IS NULL,ap.final_score ASC,COALESCE(i.published_at,i.discovered_at) DESC",
-            "status": "CASE WHEN ap.evaluation_status='pending' THEN 0 WHEN ap.evaluation_status='screened_out' THEN 1 WHEN ap.decision='keep' THEN 2 ELSE 3 END,COALESCE(i.published_at,i.discovered_at) DESC",
+            "newest": f"{arxiv_date_order} DESC,i.id DESC",
+            "oldest": f"{arxiv_date_order} ASC,i.id ASC",
+            "ai-high": f"ap.llm_score IS NULL,ap.llm_score DESC,{arxiv_date_order} DESC",
+            "ai-low": f"ap.llm_score IS NULL,ap.llm_score ASC,{arxiv_date_order} DESC",
+            "local-high": f"ap.local_score IS NULL,ap.local_score DESC,{arxiv_date_order} DESC",
+            "local-low": f"ap.local_score IS NULL,ap.local_score ASC,{arxiv_date_order} DESC",
+            "combined-high": f"ap.final_score IS NULL,ap.final_score DESC,{arxiv_date_order} DESC",
+            "combined-low": f"ap.final_score IS NULL,ap.final_score ASC,{arxiv_date_order} DESC",
+            "status": f"CASE WHEN ap.evaluation_status='pending' THEN 0 WHEN ap.evaluation_status='screened_out' THEN 1 WHEN ap.decision='keep' THEN 2 ELSE 3 END,{arxiv_date_order} DESC",
             "title": "i.title COLLATE NOCASE,i.id DESC",
-            "category": "ap.primary_category COLLATE NOCASE,COALESCE(i.published_at,i.discovered_at) DESC",
+            "category": f"ap.primary_category COLLATE NOCASE,{arxiv_date_order} DESC",
         }
         if selected_sort not in sort_options:
             selected_sort = "newest"
@@ -1830,7 +1837,9 @@ def create_app(config_path: str | None = None) -> Flask:
                     f"""SELECT i.*,f.title AS feed_title,ap.arxiv_id,ap.pdf_url,
                                 ap.local_score,ap.llm_score,ap.final_score,ap.decision,
                                 ap.why,ap.evaluation_status,ap.local_reasons_json,
-                                ap.categories_json,ap.primary_category
+                                ap.categories_json,ap.primary_category,ap.submitted_at,
+                                ap.updated_at AS arxiv_updated_at,ap.announced_at,
+                                ap.announcement_day,ap.announcement_source
                            FROM distillfeed_arxiv_papers ap
                            JOIN items i ON i.id=ap.item_id
                            JOIN feeds f ON f.id=i.feed_id

@@ -266,7 +266,7 @@ def test_item_details_date_hierarchy_and_portable_exports(configured):
     summaries = client.get("/summaries")
     assert b"Print / PDF" in summaries.data
     assert b'aria-label="Print or save summaries as PDF"' in summaries.data
-    assert b"summary.js?v=0.24.2-title-content1" in summaries.data
+    assert b"summary.js?v=0.24.3-reliability1" in summaries.data
 
 
 def test_standalone_page_headers_keep_actions_compact(configured):
@@ -345,8 +345,8 @@ def test_reader_restores_split_widths_before_first_paint(configured):
     initializer = client.get("/static/layout-init.js")
     application = client.get("/static/app.js")
 
-    early_script = b'<script src="/static/layout-init.js?v=0.24.2-title-content1"></script>'
-    stylesheet = b'<link rel="stylesheet" href="/static/app.css?v=0.24.2-title-content1">'
+    early_script = b'<script src="/static/layout-init.js?v=0.24.3-reliability1"></script>'
+    stylesheet = b'<link rel="stylesheet" href="/static/app.css?v=0.24.3-reliability1">'
     assert early_script in page.data
     assert page.data.index(early_script) < page.data.index(stylesheet)
     assert b"defer" not in early_script and b"async" not in early_script
@@ -903,7 +903,7 @@ def test_mobile_layers_narrow_pane_controls_and_favicon_are_bounded(configured):
     assert b'class="nav-menu main-menu"' in page.data
     assert b'<span class="toolbar-label">Menu</span>' in page.data
     assert b'class="action-menu scope-actions"' in page.data
-    favicon = b'<link rel="icon" type="image/svg+xml" href="/static/distillfeed-icon.svg?v=0.24.2-title-content1">'
+    favicon = b'<link rel="icon" type="image/svg+xml" href="/static/distillfeed-icon.svg?v=0.24.3-reliability1">'
     for path in ("/", "/summaries", "/history", "/health", "/notifications", "/costs", "/saved?view=favorites"):
         response = client.get(path)
         assert response.status_code == 200
@@ -979,8 +979,8 @@ def test_settings_contain_ai_source_and_queue_transitions_without_external_subme
 
 def test_service_worker_revalidates_shell_and_never_caches_api(configured):
     worker = create_app(str(configured.path)).test_client().get("/static/service-worker.js").data
-    assert b"distillfeed-v242-title-content1" in worker
-    assert b"/static/layout-init.js?v=0.24.2-title-content1" in worker
+    assert b"distillfeed-v243-reliability1" in worker
+    assert b"/static/layout-init.js?v=0.24.3-reliability1" in worker
     assert b"url.pathname.startsWith('/api/')" in worker
     assert b"fetch(event.request, { cache: 'no-cache' })" in worker
     assert b"caches.match(event.request).then(cached => cached || fetch(event.request))" not in worker

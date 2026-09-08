@@ -1,9 +1,9 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='distillfeed-icon.svg', v='0.24.2-final') }}">
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='distillfeed-icon.svg', v='0.24.3-reliability1') }}">
   <meta name="csrf-token" content="{{ csrf_token() }}"><meta name="auto-refresh" content="false">
   <meta name="item-font-size" content="{{ ui.item_font_size }}"><meta name="offline-cache-enabled" content="false"><meta name="completion-notifications" content="false">
-  <title>Configured ArXiv papers · DistillFeed</title><link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='0.24.2-final') }}"></head>
+  <title>Configured ArXiv papers · DistillFeed</title><link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='0.24.3-reliability1') }}"></head>
 <body class="summaries-page{% if ui.dark_mode %} dark-mode{% endif %}">
   <header class="topbar page-header"><a class="brand" href="/">← DistillFeed</a><strong class="page-title">Configured ArXiv papers</strong><nav class="page-actions"><a class="button-link" href="/?settings=arxiv">ArXiv settings</a></nav></header>
   <main class="saved-page arxiv-archive-page">
@@ -25,7 +25,7 @@
         <span class="saved-tags arxiv-scoreline"><strong>{% if item.evaluation_status == 'pending' %}Awaiting AI{% elif item.evaluation_status == 'screened_out' %}Locally screened out{% elif item.decision == 'keep' %}AI kept{% else %}AI dropped{% endif %}</strong> · Local {{ item.local_score if item.local_score is not none else '—' }} · AI {{ item.llm_score if item.llm_score is not none else '—' }} · Combined {{ item.final_score if item.final_score is not none else '—' }}</span>
         <button class="read-button" data-read="{{ 1 if item.is_read else 0 }}" aria-label="Toggle read status">{{ '○' if item.is_read else '●' }}</button>
         <details class="arxiv-paper-details"><summary>Abstract, authors, categories, and ranking rationale</summary><div>
-          <dl><div><dt>arXiv ID</dt><dd>{{ item.arxiv_id or '—' }}</dd></div><div><dt>Authors</dt><dd>{{ item.author or 'Not supplied' }}</dd></div><div><dt>Categories</dt><dd>{{ item.categories|join(' · ') if item.categories else item.primary_category or 'Not supplied' }}</dd></div><div><dt>Published</dt><dd>{{ display_timestamp(item.published_at or item.discovered_at) }}</dd></div></dl>
+          <dl><div><dt>arXiv ID</dt><dd>{{ item.arxiv_id or '—' }}</dd></div><div><dt>Authors</dt><dd>{{ item.author or 'Not supplied' }}</dd></div><div><dt>Categories</dt><dd>{{ item.categories|join(' · ') if item.categories else item.primary_category or 'Not supplied' }}</dd></div><div><dt>Announcement</dt><dd>{% if item.announced_at %}{{ display_timestamp(item.announced_at) }}{% elif item.announcement_source == 'legacy' %}{{ display_timestamp(item.published_at or item.discovered_at) }} <small>(legacy date)</small>{% elif item.announcement_source == 'legacy-api-date' %}{{ display_timestamp(item.published_at or item.discovered_at) }} <small>(unverified API date)</small>{% else %}Unknown{% endif %}</dd></div>{% if item.submitted_at %}<div><dt>Submitted</dt><dd>{{ display_timestamp(item.submitted_at) }}</dd></div>{% endif %}</dl>
           <section><h3>Abstract</h3><div class="summary-markdown">{{ (item.description_text or 'No abstract was supplied by arXiv.')|summary_markup }}</div></section>
           <section><h3>AI rationale</h3><div class="summary-markdown">{{ (item.why or 'This paper has no AI rationale yet.')|summary_markup }}</div></section>
           {% if item.local_reasons %}<section><h3>Local screening signals</h3><ul>{% for reason in item.local_reasons %}<li>{{ reason }}</li>{% endfor %}</ul></section>{% endif %}
@@ -33,5 +33,5 @@
       </article>{% else %}<p class="empty">No papers match this view.</p>{% endfor %}</div>{% endif %}
       {% if page_count > 1 %}<nav class="pagination" aria-label="arXiv archive pages">{% if page > 1 %}<a class="button-link" href="{{ url_for('arxiv_archive_page', status=selected_status, q=query or none, category=selected_category or none, sort=selected_sort, page=page - 1) }}">Previous</a>{% endif %}<span>Page {{ page }} of {{ page_count }}</span>{% if page < page_count %}<a class="button-link" href="{{ url_for('arxiv_archive_page', status=selected_status, q=query or none, category=selected_category or none, sort=selected_sort, page=page + 1) }}">Next</a>{% endif %}</nav>{% endif %}
     </section>
-  </main><div id="toast" role="status" aria-live="polite"></div><script src="{{ url_for('static', filename='app.js', v='0.24.2-final') }}" defer></script>
+  </main><div id="toast" role="status" aria-live="polite"></div><script src="{{ url_for('static', filename='app.js', v='0.24.3-reliability1') }}" defer></script>
 </body></html>

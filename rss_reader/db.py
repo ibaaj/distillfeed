@@ -45,6 +45,8 @@ CREATE TABLE IF NOT EXISTS feeds (
     next_retry_at TEXT,
     consecutive_failures INTEGER NOT NULL DEFAULT 0,
     last_http_status INTEGER,
+    last_content_type TEXT,
+    last_error_kind TEXT,
     last_error TEXT,
     created_at TEXT NOT NULL
 );
@@ -58,7 +60,11 @@ CREATE TABLE IF NOT EXISTS items (
     url TEXT,
     author TEXT,
     published_at TEXT,
+    source_published_at TEXT,
     discovered_at TEXT NOT NULL,
+    date_warning TEXT,
+    content_kind TEXT NOT NULL DEFAULT '',
+    content_kind_source TEXT NOT NULL DEFAULT '',
     description_text TEXT NOT NULL DEFAULT '',
     summary_eligible INTEGER NOT NULL DEFAULT 1,
     is_read INTEGER NOT NULL DEFAULT 0,
@@ -351,10 +357,45 @@ def initialize(path: str | Path) -> None:
             connection.execute("ALTER TABLE items ADD COLUMN summary_eligible INTEGER NOT NULL DEFAULT 1")
         if "is_read_later" not in item_columns:
             connection.execute("ALTER TABLE items ADD COLUMN is_read_later INTEGER NOT NULL DEFAULT 0")
+        if "source_published_at" not in item_columns:
+            connection.execute("ALTER TABLE items ADD COLUMN source_published_at TEXT")
+        if "date_warning" not in item_columns:
+            connection.execute("ALTER TABLE items ADD COLUMN date_warning TEXT")
+        if "content_kind" not in item_columns:
+            connection.execute("ALTER TABLE items ADD COLUMN content_kind TEXT NOT NULL DEFAULT ''")
+        if "content_kind_source" not in item_columns:
+            connection.execute("ALTER TABLE items ADD COLUMN content_kind_source TEXT NOT NULL DEFAULT ''")
+        # Preserve the source-declared timestamp separately. Existing rows with a
+        # publication time that was already in the future when retrieved are
+        # repaired to sort/group by their discovery time without discarding the
+        # feed's original value. The migration is deliberately idempotent.
+        connection.execute(
+            """UPDATE items SET source_published_at=published_at
+                 WHERE source_published_at IS NULL AND published_at IS NOT NULL"""
+        )
+        connection.execute(
+            """UPDATE items
+                   SET published_at=discovered_at,date_warning='future-source-date'
+                 WHERE source_published_at IS NOT NULL
+                   AND discovered_at IS NOT NULL
+                   AND julianday(source_published_at) > julianday(discovered_at) + (2.0 / 24.0)"""
+        )
+        # Backfill only explicit YouTube Shorts URLs.  This deliberately avoids
+        # duration guesses and network enrichment.
+        connection.execute(
+            """UPDATE items
+                   SET content_kind='youtube-short',content_kind_source='explicit-url'
+                 WHERE COALESCE(content_kind,'')=''
+                   AND (lower(COALESCE(url,'')) GLOB 'https://youtube.com/shorts/*'
+                        OR lower(COALESCE(url,'')) GLOB 'https://www.youtube.com/shorts/*'
+                        OR lower(COALESCE(url,'')) GLOB 'https://m.youtube.com/shorts/*')"""
+        )
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_items_summary_eligible ON items(summary_eligible)"
         )
         connection.execute("CREATE INDEX IF NOT EXISTS idx_items_read_later ON items(is_read_later)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_items_content_kind ON items(content_kind)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_items_date_warning ON items(date_warning)")
         group_columns = {row["name"] for row in connection.execute("PRAGMA table_info(groups)").fetchall()}
         if "llm_enabled" not in group_columns:
             connection.execute("ALTER TABLE groups ADD COLUMN llm_enabled INTEGER NOT NULL DEFAULT 1")
@@ -388,6 +429,10 @@ def initialize(path: str | Path) -> None:
             connection.execute("UPDATE feeds SET ai_mode='off' WHERE llm_enabled=0")
         if "title_locked" not in feed_columns:
             connection.execute("ALTER TABLE feeds ADD COLUMN title_locked INTEGER NOT NULL DEFAULT 0")
+        if "last_content_type" not in feed_columns:
+            connection.execute("ALTER TABLE feeds ADD COLUMN last_content_type TEXT")
+        if "last_error_kind" not in feed_columns:
+            connection.execute("ALTER TABLE feeds ADD COLUMN last_error_kind TEXT")
         if "position" not in feed_columns:
             connection.execute("ALTER TABLE feeds ADD COLUMN position INTEGER NOT NULL DEFAULT 0")
             # Existing readers displayed child groups before loose feeds.  Seed a

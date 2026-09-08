@@ -700,8 +700,14 @@ dialog .checkbox-label { display: flex; align-items: center; gap: 8px; } dialog 
 .review-score-scored { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--bg)); }
 .review-score-pending { color: #9a5a00; }
 .dark-mode .review-score-pending { color: #ffc66d; }
-.review-item-title { grid-area: title; min-width: 0; overflow-wrap: anywhere; color: var(--text); font-size: var(--item-size); font-weight: 700; line-height: 1.28; text-decoration: none; }
+.review-item-title-line { grid-area: title; min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px 7px; }
+.review-item-title { min-width: 0; overflow-wrap: anywhere; color: var(--text); font-size: var(--item-size); font-weight: 700; line-height: 1.28; text-decoration: none; }
 a.review-item-title:hover, a.review-item-title:focus-visible { color: var(--accent); text-decoration: underline; }
+.review-kind-badge { flex: 0 0 auto; display: inline-flex; align-items: center; min-height: 18px; border: 1px solid var(--border); border-radius: 999px; padding: 1px 6px; background: var(--surface-2); color: var(--muted); font-size: 8px; font-weight: 800; letter-spacing: .035em; line-height: 1; text-transform: uppercase; white-space: nowrap; }
+.review-kind-youtube-short { border-color: color-mix(in srgb, #e62117 55%, var(--border)); color: #b51b13; background: color-mix(in srgb, #e62117 7%, var(--bg)); }
+.dark-mode .review-kind-youtube-short { color: #ff8b83; }
+.review-date-warning { border-color: color-mix(in srgb, #c27b00 55%, var(--border)); color: #8a5700; background: color-mix(in srgb, #f0a000 8%, var(--bg)); }
+.dark-mode .review-date-warning { color: #ffc66d; }
 .review-content-toggle { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; border: 0; padding: 2px 0; background: transparent; color: var(--accent); font-size: 10px; font-weight: 700; }
 .review-item-caret { color: currentColor; font-size: 16px; line-height: 1; transition: transform .15s ease; }
 .review-content-toggle[aria-expanded="true"] .review-item-caret { transform: rotate(90deg); }

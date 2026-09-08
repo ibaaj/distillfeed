@@ -313,3 +313,36 @@ def test_retention_preserves_every_explicitly_saved_state(configured, monkeypatc
             row["stable_id"] for row in connection.execute("SELECT stable_id FROM items")
         }
     assert remaining == {"favorite", "later", "tagged", "unread", "summarized"}
+
+
+def test_deferred_source_keeps_successful_feed_updates_and_marks_refresh_partial(configured, monkeypatch):
+    monkeypatch.setattr(
+        "rss_reader.service.refresh_all",
+        lambda connection, config, **kwargs: {
+            "attempted": 3,
+            "succeeded": 2,
+            "failed": 0,
+            "deferred": 1,
+            "new_items": 7,
+            "failure_kinds": {},
+            "feed_failures": [],
+            "deferred_kinds": {"provider-challenge": 1},
+            "feed_deferred": [{
+                "id": 84,
+                "title": "dblp: Luc De Raedt",
+                "kind": "provider-challenge",
+                "until": "2026-09-09T00:00:00+00:00",
+                "reason": "Source returned an anti-bot HTML challenge; RSS retrieval deferred",
+            }],
+        },
+    )
+    result = run_refresh(configured, force=True)
+    assert result["status"] == "partial"
+    assert result["succeeded"] == 2
+    assert result["deferred"] == 1
+    assert result["new_items"] == 7
+    with connect(configured.database_path) as connection:
+        run = connection.execute("SELECT * FROM refresh_runs ORDER BY id DESC").fetchone()
+    assert run["status"] == "partial"
+    assert run["feeds_succeeded"] == 2
+    assert run["new_items"] == 7

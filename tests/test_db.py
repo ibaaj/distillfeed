@@ -169,3 +169,47 @@ def test_initialize_adds_group_review_display_mode_with_safe_default(tmp_path):
         ).fetchone()[0]
     assert "review_display_mode" in columns
     assert mode == "daily"
+
+
+
+def test_initialize_preserves_future_source_date_and_backfills_explicit_shorts(tmp_path):
+    database = tmp_path / "legacy-item-metadata.sqlite3"
+    initialize(database)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO groups(id,title,position,created_at) VALUES(1,'Videos',0,'2026-09-08T00:00:00+00:00')"
+        )
+        connection.execute(
+            """INSERT INTO feeds(id,group_id,title,xml_url,created_at)
+               VALUES(1,1,'Channel','https://example.test/feed.xml','2026-09-08T00:00:00+00:00')"""
+        )
+        connection.execute(
+            """INSERT INTO items(
+                   id,feed_id,stable_id,title,url,published_at,source_published_at,
+                   discovered_at,date_warning,content_kind,content_kind_source
+               ) VALUES(1,1,'future','Future item','https://example.test/article',
+                        '2026-09-12T12:00:00+00:00',NULL,'2026-09-08T12:00:00+00:00',NULL,'','')"""
+        )
+        connection.execute(
+            """INSERT INTO items(
+                   id,feed_id,stable_id,title,url,published_at,discovered_at,
+                   content_kind,content_kind_source
+               ) VALUES(2,1,'short','Short','https://www.youtube.com/shorts/NmiD1YdbrAA',
+                        '2026-09-08T10:00:00+00:00','2026-09-08T10:01:00+00:00','','')"""
+        )
+        connection.commit()
+
+    initialize(database)
+    initialize(database)
+
+    with sqlite3.connect(database) as connection:
+        connection.row_factory = sqlite3.Row
+        future = connection.execute("SELECT * FROM items WHERE id=1").fetchone()
+        short = connection.execute("SELECT * FROM items WHERE id=2").fetchone()
+        feed_columns = {row[1] for row in connection.execute("PRAGMA table_info(feeds)")}
+    assert future["source_published_at"] == "2026-09-12T12:00:00+00:00"
+    assert future["published_at"] == "2026-09-08T12:00:00+00:00"
+    assert future["date_warning"] == "future-source-date"
+    assert short["content_kind"] == "youtube-short"
+    assert short["content_kind_source"] == "explicit-url"
+    assert {"last_content_type", "last_error_kind"} <= feed_columns

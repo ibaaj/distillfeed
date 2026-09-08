@@ -128,9 +128,16 @@ def _refresh_message(result: dict[str, Any]) -> str:
     succeeded = int(result.get("succeeded", 0))
     added = int(result.get("new_items", 0))
     if status == "partial":
+        deferred = int(result.get("deferred", 0))
+        failed = int(result.get("failed", 0))
+        outcome = [f"{succeeded} succeeded"]
+        if deferred:
+            outcome.append(f"{deferred} deferred by source or retry policy")
+        if failed:
+            outcome.append(f"{failed} failed")
         return (
-            f"Checked {attempted} feeds; {succeeded} succeeded and {added} new "
-            "entries were stored. Failed feeds kept their previous content."
+            f"Checked {attempted} feeds; {', '.join(outcome)} and {added} new "
+            "entries were stored. Successful feeds kept their updates."
         )
     if status == "failed":
         return str(result.get("error") or "The feed check failed")
