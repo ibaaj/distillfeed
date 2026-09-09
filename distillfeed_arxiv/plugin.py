@@ -515,35 +515,74 @@ def _pending(connection: Any, feed_ids: list[int]) -> list[tuple[int, Paper]]:
     return [(int(row["item_id"]), _paper_from_row(row)) for row in rows]
 
 
-def _stored_day_evaluations(
-    connection: Any, feed_ids: list[int], day: str, broad_threshold: int,
-) -> list[tuple[int, Paper, LocalScore, Decision]]:
-    """Load already AI-ranked papers for one day without re-querying the model."""
+
+def _stored_evaluations_by_day(
+    connection: Any, feed_ids: list[int], broad_threshold: int,
+) -> dict[str, list[tuple[int, Paper, LocalScore, Decision]]]:
+    """Load completed AI rankings grouped by the canonical paper day.
+
+    Canonical day partition: database selection and fingerprints share _paper_day.
+    A raw substring of ``items.published_at`` is not authoritative here: after
+    announcement-date repair or timezone normalization it may differ from the
+    day represented by ``Paper``. Every daily stage therefore uses _paper_day().
+    """
+    if not feed_ids:
+        return {}
     marks = ",".join("?" for _ in feed_ids)
     rows = connection.execute(
-        f"""SELECT ap.*,i.feed_id,i.title,i.url,i.author,i.published_at,i.description_text
+        f"""SELECT ap.*,i.*
               FROM distillfeed_arxiv_papers ap JOIN items i ON i.id=ap.item_id
              WHERE i.feed_id IN ({marks})
-               AND COALESCE(ap.announcement_day,'undated')=?
                AND ap.evaluation_status='complete'
                AND ap.llm_score IS NOT NULL
                AND ap.local_score>=?
              ORDER BY ap.llm_score DESC,ap.local_score DESC,i.id""",
-        [*feed_ids, day, broad_threshold],
+        [*feed_ids, broad_threshold],
     ).fetchall()
-    result: list[tuple[int, Paper, LocalScore, Decision]] = []
+    grouped: dict[str, list[tuple[int, Paper, LocalScore, Decision]]] = {}
     for row in rows:
+        paper = _paper_from_row(row)
         reasons = json.loads(row["local_reasons_json"] or "[]")
         tags = json.loads(row["tags_json"] or "[]")
-        local = LocalScore(score=int(row["local_score"]), reasons=[str(value) for value in reasons])
-        decision = Decision(
-            local_score=int(row["local_score"]), llm_score=int(row["llm_score"]),
-            final_score=float(row["final_score"] if row["final_score"] is not None else row["local_score"]),
-            decision=str(row["decision"] or "drop"), why=str(row["why"] or ""),
-            tags=[str(value) for value in tags], local_reasons=[str(value) for value in reasons],
+        local = LocalScore(
+            score=int(row["local_score"]),
+            reasons=[str(value) for value in reasons],
         )
-        result.append((int(row["item_id"]), _paper_from_row(row), local, decision))
-    return result
+        decision = Decision(
+            local_score=int(row["local_score"]),
+            llm_score=int(row["llm_score"]),
+            final_score=float(
+                row["final_score"]
+                if row["final_score"] is not None
+                else row["local_score"]
+            ),
+            decision=str(row["decision"] or "drop"),
+            why=str(row["why"] or ""),
+            tags=[str(value) for value in tags],
+            local_reasons=[str(value) for value in reasons],
+        )
+        grouped.setdefault(_paper_day(paper), []).append(
+            (int(row["item_id"]), paper, local, decision)
+        )
+    for values in grouped.values():
+        values.sort(
+            key=lambda entry: (
+                entry[3].decision != "keep",
+                -(entry[3].llm_score if entry[3].llm_score is not None else -1),
+                -entry[3].local_score,
+                entry[0],
+            )
+        )
+    return grouped
+
+
+def _stored_day_evaluations(
+    connection: Any, feed_ids: list[int], day: str, broad_threshold: int,
+) -> list[tuple[int, Paper, LocalScore, Decision]]:
+    """Load already AI-ranked papers for one canonical day."""
+    return list(
+        _stored_evaluations_by_day(connection, feed_ids, broad_threshold).get(day, ())
+    )
 
 
 def _group_scored_by_day(
@@ -556,17 +595,17 @@ def _group_scored_by_day(
 
 
 def _dedicated_digest_days(connection: Any, group_id: int, feed_ids: list[int]) -> set[str]:
-    """Return days that already have a successful single-day arXiv summary.
+    """Return canonical days represented by successful single-day arXiv summaries.
 
-    Older releases could write one summary containing several announcement days.
-    Such a summary is intentionally *not* considered a dedicated daily digest so
-    a one-time manual recovery can rebuild those dates independently.
+    Summary membership is interpreted through _paper_from_row() and _paper_day()
+    exactly like pending work and evidence fingerprints. A legacy storage date
+    can therefore never make a multi-day summary look like one daily digest.
     """
+    if not feed_ids:
+        return set()
     marks = ",".join("?" for _ in feed_ids)
     rows = connection.execute(
-        f"""SELECT s.id,
-                    MIN(COALESCE(ap.announcement_day,'undated')) AS first_day,
-                    MAX(COALESCE(ap.announcement_day,'undated')) AS last_day
+        f"""SELECT s.id AS summary_id,ap.*,i.*
                FROM summaries s
                JOIN llm_runs lr ON lr.id=s.llm_run_id
                JOIN summary_items si ON si.summary_id=s.id
@@ -578,32 +617,28 @@ def _dedicated_digest_days(connection: Any, group_id: int, feed_ids: list[int]) 
                          WHEN s.scope_feed_id IS NOT NULL THEN 'feed' ELSE 'group' END='group'
                 AND COALESCE(s.scope_id,s.group_id)=?
                 AND i.feed_id IN ({marks})
-              GROUP BY s.id
-             HAVING first_day=last_day""",
+              ORDER BY s.id,si.rank,i.id""",
         [group_id, *feed_ids],
     ).fetchall()
-    return {str(row["first_day"]) for row in rows if row["first_day"]}
+    days_by_summary: dict[int, set[str]] = {}
+    for row in rows:
+        days_by_summary.setdefault(int(row["summary_id"]), set()).add(
+            _paper_day(_paper_from_row(row))
+        )
+    return {
+        next(iter(days))
+        for days in days_by_summary.values()
+        if len(days) == 1
+    }
 
 
 def _missing_daily_digest_days(
     connection: Any, group_id: int, feed_ids: list[int], broad_threshold: int,
 ) -> list[str]:
-    """Find historical AI-scored days that never received a true daily digest."""
+    """Find canonical AI-scored days without a successful daily digest."""
     dedicated = _dedicated_digest_days(connection, group_id, feed_ids)
-    marks = ",".join("?" for _ in feed_ids)
-    rows = connection.execute(
-        f"""SELECT DISTINCT COALESCE(ap.announcement_day,'undated') AS digest_day
-              FROM distillfeed_arxiv_papers ap
-              JOIN items i ON i.id=ap.item_id
-             WHERE i.feed_id IN ({marks})
-               AND ap.announcement_day IS NOT NULL
-               AND ap.evaluation_status='complete'
-               AND ap.llm_score IS NOT NULL
-               AND ap.local_score>=?
-             ORDER BY digest_day""",
-        [*feed_ids, broad_threshold],
-    ).fetchall()
-    return [str(row["digest_day"]) for row in rows if row["digest_day"] and str(row["digest_day"]) not in dedicated]
+    stored = _stored_evaluations_by_day(connection, feed_ids, broad_threshold)
+    return sorted(day for day in stored if day not in dedicated)
 
 
 def _evidence_fingerprint(
@@ -952,8 +987,14 @@ class ArxivDigestPlugin:
         stats["new_items"] = len(created_item_ids.intersection(retained_ids))
 
         pending_by_day = _group_scored_by_day(shortlisted)
-        missing_digest_days = _missing_daily_digest_days(
-            context.connection, group_id, feed_ids, broad,
+        stored_by_day = _stored_evaluations_by_day(
+            context.connection, feed_ids, broad,
+        )
+        dedicated_digest_days = _dedicated_digest_days(
+            context.connection, group_id, feed_ids,
+        )
+        missing_digest_days = sorted(
+            day for day in stored_by_day if day not in dedicated_digest_days
         )
         work_days = sorted(set(pending_by_day).union(missing_digest_days))
         stats["backlog_days"] = len(work_days)
@@ -1021,12 +1062,18 @@ class ArxivDigestPlugin:
                 break
 
             day_scored = pending_by_day.get(day, [])
-            existing = _stored_day_evaluations(context.connection, feed_ids, day, broad)
+            existing = list(stored_by_day.get(day, ()))
             evidence_map: dict[int, tuple[int, Paper]] = {
                 item_id: (item_id, paper) for item_id, paper, _local, _decision in existing
             }
             evidence_map.update({item_id: (item_id, paper) for item_id, paper, _local in day_scored})
             evidence = list(evidence_map.values())
+            evidence_days = {_paper_day(paper) for _, paper in evidence}
+            if evidence_days != {day}:
+                raise RuntimeError(
+                    f"Internal arXiv day partition mismatch for {day}: "
+                    + ", ".join(sorted(evidence_days))
+                )
             if not evidence:
                 # Defensive: a day can disappear only if rows were concurrently
                 # removed. The job lock should make this unreachable, but do not

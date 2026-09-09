@@ -1457,3 +1457,79 @@ def test_legacy_weekend_arxiv_migration_preserves_score_and_is_idempotent(config
     assert first["score_prompt_version"] == "legacy"
     assert first["score_rubric_version"] == "legacy-unanchored"
     connection.close()
+
+
+
+def test_arxiv_daily_fingerprint_repartitions_legacy_storage_dates(
+    configured, monkeypatch,
+):
+    connection = connect(configured.database_path)
+    plugin = ArxivDigestPlugin()
+    plugin.initialize(connection, configured)
+    group_id = int(connection.execute(
+        "SELECT value FROM distillfeed_arxiv_state WHERE key='group_id'"
+    ).fetchone()[0])
+    feed_id = int(connection.execute(
+        "SELECT id FROM feeds WHERE group_id=? ORDER BY id LIMIT 1", (group_id,)
+    ).fetchone()[0])
+
+    canonical_days = {
+        "2609.91001": "2026-09-08",
+        "2609.91002": "2026-09-09",
+    }
+    for arxiv_id in canonical_days:
+        candidate = paper(arxiv_id)
+        # Both records deliberately share one legacy storage date. This models
+        # rows whose authoritative announcement days were repaired afterward.
+        candidate.published = candidate.updated = datetime(
+            2026, 9, 5, 12, tzinfo=UTC,
+        )
+        item_id, _created, _revised = plugin_module._store_paper(
+            connection, candidate, feed_id,
+        )
+        connection.execute(
+            """UPDATE distillfeed_arxiv_papers
+                  SET local_score=4,llm_score=91,final_score=34.45,
+                      decision='keep',why='Already ranked',
+                      evaluation_status='complete',evaluated_at=?
+                WHERE item_id=?""",
+            (utcnow(), item_id),
+        )
+
+    original_day = plugin_module._paper_day
+    monkeypatch.setattr(
+        plugin_module,
+        "_paper_day",
+        lambda value: canonical_days.get(value.arxiv_id, original_day(value)),
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    rerank_calls: list[int] = []
+    digest_days: list[set[str]] = []
+
+    def rank(candidates, cfg, **kwargs):
+        rerank_calls.append(len(candidates))
+        return {}, LLMUsage()
+
+    def digest(values, cfg, language):
+        digest_days.append({plugin_module._paper_day(value[0]) for value in values})
+        return ({"overview": "Canonical daily digest", "sections": []}, LLMUsage())
+
+    monkeypatch.setattr(plugin_module, "rerank", rank)
+    monkeypatch.setattr(plugin_module, "daily_digest", digest)
+    monkeypatch.setattr(
+        plugin_module,
+        "deliver_arxiv_pushes",
+        lambda *args, **kwargs: {"status": "disabled"},
+    )
+
+    result = plugin.summarize(context(configured, connection, automatic=False))
+
+    assert result["status"] == "success"
+    assert result["completed_announcements"] == ["2026-09-08", "2026-09-09"]
+    assert rerank_calls == []
+    assert digest_days == [{"2026-09-08"}, {"2026-09-09"}]
+    assert connection.execute(
+        "SELECT COUNT(*) FROM distillfeed_arxiv_papers WHERE llm_score=91"
+    ).fetchone()[0] == 2
+    connection.close()
