@@ -22,7 +22,7 @@ class Paper:
     source_categories: list[str] = field(default_factory=list)
     submitted_at: datetime | None = None
     announced_at: datetime | None = None
-    announcement_source: str | None = None
+    announcement_source: str = ""
 
 
 @dataclass

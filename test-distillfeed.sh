@@ -11,7 +11,7 @@ set -Eeuo pipefail
 # AI calls are separate, explicit opt-ins; the default run only uses mocked
 # network responses from the test suite and loopback HTTP health requests.
 
-EXPECTED_VERSION="0.24.3"
+EXPECTED_VERSION="0.25.0"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 ARCHIVE="${ARCHIVE:-$SCRIPT_DIR/distillfeed-$EXPECTED_VERSION.tar.gz}"
 TEST_TMPDIR="${TEST_TMPDIR:-${TMPDIR:-/tmp}}"
@@ -507,6 +507,10 @@ if command -v node >/dev/null 2>&1; then
         | while IFS= read -r -d '' javascript_file; do
         node --check "$javascript_file"
     done
+    note "Running review, reader and RC2 state-transition regression suites..."
+    node "$PROJECT/tests/review_state.test.js"
+    node "$PROJECT/tests/reader025_state.test.js"
+    node "$PROJECT/tests/reader_rc2_state.test.js"
 else
     note "Node.js is absent; JavaScript syntax check skipped. DistillFeed users do not need Node.js."
 fi

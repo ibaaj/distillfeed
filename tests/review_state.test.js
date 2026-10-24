@@ -11,7 +11,11 @@ function reduce(state, action) { return Review.reducer(state, action); }
 // Every preset has a stable, explicit contract.
 const expectedPresets = {
   'best-unread': { read: 'unread', ai: 'scored', decision: 'keep', min_ai: 80, sort: 'ai' },
-  'catch-up': { read: 'unread', ai: 'all', decision: 'all', min_ai: 0, sort: 'ai' },
+  'catch-up': { read: 'all', ai: 'all', decision: 'all', min_ai: 0, sort: 'ai', from: '2026-08-14', to: '2026-08-18' },
+  'current-week': { read:'all',from:'2026-08-17',to:'2026-08-18' },
+  'last-5-days': { read:'all',from:'2026-08-14',to:'2026-08-18' },
+  'best': {read:'all',ai:'scored',min_ai:80},
+  'best-read': {read:'read',ai:'scored',min_ai:80},
   'today': { from: '2026-08-18', to: '2026-08-18' },
   'awaiting-ai': { ai: 'pending', sort: 'local' },
   'starred': { saved: 'starred' },
@@ -148,7 +152,7 @@ assert.deepEqual(duplicateStart, state);
 state = reduce(state, { type: 'FINISH_DAY_SUCCESS', day: '2026-08-18', payload: { changed: 3 } });
 assert.equal(state.days[0].unread, 0);
 assert.equal(state.days[0].complete, true);
-assert.equal(state.openDays['2026-08-18'], false);
+assert.equal(state.openDays['2026-08-18'], true); // Reading does not collapse the day.
 assert.equal(state.finishingDays['2026-08-18'], undefined);
 
 console.log('review state transitions: ok');

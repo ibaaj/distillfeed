@@ -1,4 +1,15 @@
 (() => {
+  // Privacy-mode storage denial must not disable Settings or reader controls.
+  function guardedStorage(name) {
+    const fallback = new Map();
+    return {
+      getItem(key) { try { return window[name].getItem(key) ?? fallback.get(key) ?? null; } catch (_) { return fallback.get(key) ?? null; } },
+      setItem(key, value) { fallback.set(key, String(value)); try { window[name].setItem(key, String(value)); } catch (_) { /* memory-only for this page */ } },
+      removeItem(key) { fallback.delete(key); try { window[name].removeItem(key); } catch (_) { /* memory-only for this page */ } },
+    };
+  }
+  const safeSession = guardedStorage('sessionStorage');
+  const safeLocal = guardedStorage('localStorage');
   let csrf = document.querySelector('meta[name="csrf-token"]')?.content || '';
   const toast = document.getElementById('toast');
   let toastTimer;
@@ -8,9 +19,9 @@
     clearTimeout(toastTimer); toast.textContent = message; toast.classList.add('visible');
     toastTimer = setTimeout(() => toast.classList.remove('visible'), 4000);
   }
-  const completedOperation = sessionStorage.getItem('distillfeedCompletedOperation');
+  const completedOperation = safeSession.getItem('distillfeedCompletedOperation');
   if (completedOperation) {
-    sessionStorage.removeItem('distillfeedCompletedOperation');
+    safeSession.removeItem('distillfeedCompletedOperation');
     setTimeout(() => notify(completedOperation), 150);
   }
 
@@ -235,7 +246,7 @@
         setTimeout(() => {
           setJobControlsDisabled(false);
           if (reloadWhenDone) {
-            sessionStorage.setItem('distillfeedCompletedOperation', resultMessage);
+            safeSession.setItem('distillfeedCompletedOperation', resultMessage);
             location.reload();
           } else {
             jobProgress.hidden = true; notify(resultMessage);
@@ -358,9 +369,9 @@
     if (!enabled) return;
     const interval = Math.max(1, Number(intervalMinutes) || 30) * 60000;
     const checkAutomatically = () => {
-      const previousCheck = Number(sessionStorage.getItem('autoRefreshCheckedAt') || 0);
+      const previousCheck = Number(safeSession.getItem('autoRefreshCheckedAt') || 0);
       if (Date.now() - previousCheck < interval) return;
-      sessionStorage.setItem('autoRefreshCheckedAt', String(Date.now()));
+      safeSession.setItem('autoRefreshCheckedAt', String(Date.now()));
       startJob('/api/refresh', { automatic: true }, 'Checking for new articles…');
     };
     if (checkNow) checkAutomatically();
@@ -448,14 +459,14 @@
     if (!await askConfirmation('Delete feed?', `“${button.dataset.feedTitle}” and all of its stored items will be deleted.`, 'Delete feed')) return;
     try {
       await api(`/api/feeds/${button.dataset.feedId}`, { method: 'DELETE' });
-      sessionStorage.setItem('subscriptionEditMode', '1'); location.reload();
+      safeSession.setItem('subscriptionEditMode', '1'); location.reload();
     } catch (error) { notify(error.message); }
   }));
   document.querySelectorAll('.delete-group').forEach(button => button.addEventListener('click', async () => {
     if (!await askConfirmation('Delete group?', `“${button.dataset.title}”, its nested groups, feeds, items, and summaries will be deleted.`, 'Delete group')) return;
     try {
       await api(`/api/groups/${button.dataset.id}`, { method: 'DELETE' });
-      sessionStorage.setItem('subscriptionEditMode', '1'); location.reload();
+      safeSession.setItem('subscriptionEditMode', '1'); location.reload();
     } catch (error) { notify(error.message); }
   }));
   const renameDialog = document.getElementById('rename-dialog');
@@ -518,7 +529,7 @@
   let settingsDirty = false;
   let settingsSaving = false;
   let settingsSavedSinceOpen = false;
-  const storedSettingsPanel = sessionStorage.getItem('distillfeedSettingsPanel') || '';
+  const storedSettingsPanel = safeSession.getItem('distillfeedSettingsPanel') || '';
   const settingsPanelAliases = { 'settings-updates': 'settings-feed-updates' };
   let selectedSettingsPanel = settingsPanelAliases[storedSettingsPanel]
     || storedSettingsPanel || 'settings-appearance';
@@ -535,7 +546,7 @@
       if (active && focus) button.focus();
     });
     panel.open = true;
-    if (remember) sessionStorage.setItem('distillfeedSettingsPanel', panel.id);
+    if (remember) safeSession.setItem('distillfeedSettingsPanel', panel.id);
     if (settingsDesktop.matches && settingsContent) settingsContent.scrollTop = 0;
   }
   function syncSettingsLayout() {
@@ -564,6 +575,13 @@
   function showSettings() { syncSettingsLayout(); openDialog(settingsDialog); }
   document.getElementById('settings-button')?.addEventListener('click', showSettings);
   document.getElementById('settings-menu-button')?.addEventListener('click', showSettings);
+  document.querySelectorAll('[data-settings-open]').forEach(button => button.addEventListener('click', () => {
+    const target = button.dataset.settingsOpen;
+    if (settingsPanels.some(panel => panel.id === target)) {
+      document.querySelectorAll('details.action-menu[open], #review-audio-disclosure[open]').forEach(menu => { menu.open = false; });
+      selectSettingsPanel(target); showSettings();
+    }
+  }));
   const requestedSettingsPanel = new URLSearchParams(location.search).get('settings');
   if (requestedSettingsPanel) {
     const requestedPanelId = `settings-${requestedSettingsPanel}`;
@@ -637,6 +655,15 @@
     return true;
   }
   snapshotSettings(); updateSettingsActions('');
+  window.addEventListener('distillfeed:font-saved', event => {
+    for (const [path, value] of Object.entries(event.detail || {})) {
+      const input = settingsControls.find(control => control.dataset.configPath === path);
+      if (input && String(controlValue(input)) === String(savedSettings.get(path))) {
+        input.value = value; savedSettings.set(path, input.value);
+      }
+    }
+    updateSettingsActions();
+  });
   settingsControls.forEach(input => {
     input.addEventListener('input', () => updateSettingsActions());
     input.addEventListener('change', () => updateSettingsActions());
@@ -739,13 +766,23 @@
     else { dialog.returnValue = 'cancel'; dialog.close('cancel'); }
   }));
   document.getElementById('restore-form')?.addEventListener('submit', async event => {
-    event.preventDefault(); const formData = new FormData(event.target);
+    event.preventDefault();
+    const form = event.target; if (form.dataset.restoring === 'true') return;
+    const file = form.querySelector('input[type="file"]')?.files?.[0];
+    if (!file) { notify('Choose a backup ZIP'); return; }
+    if (file.size > 1024 * 1024 * 1024) { notify('Backup ZIP exceeds the 1 GiB upload limit.'); return; }
+    const formData = new FormData(form);
+    form.dataset.restoring = 'true';
+    const button = form.querySelector('[type="submit"]'); const original = button?.textContent;
+    if (button) { button.disabled = true; button.textContent = 'Validating and restoring…'; }
+    notify('Uploading and validating the backup. A safety copy is created before replacement.');
     try {
       const response = await request('/api/restore', { method: 'POST', body: formData });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result.error || `Restore failed (${response.status})`);
       notify('Backup restored; reloading DistillFeed'); setTimeout(() => location.reload(), 900);
     } catch (error) { notify(error.message); }
+    finally { form.dataset.restoring = 'false'; if (button) { button.disabled = false; button.textContent = original; } }
   });
   const subscriptionEditButton = document.getElementById('subscription-edit-toggle');
   const subscriptionPane = document.getElementById('subscriptions');
@@ -783,9 +820,9 @@
       subscriptionEditButton.setAttribute('aria-pressed', editing ? 'true' : 'false');
     }
     syncSubscriptionMoveButtons();
-    sessionStorage.setItem('subscriptionEditMode', editing ? '1' : '0');
+    safeSession.setItem('subscriptionEditMode', editing ? '1' : '0');
   }
-  if (subscriptionPane && sessionStorage.getItem('subscriptionEditMode') === '1') setSubscriptionEditing(true);
+  if (subscriptionPane && safeSession.getItem('subscriptionEditMode') === '1') setSubscriptionEditing(true);
   subscriptionEditButton?.addEventListener('click', () => {
     const editing = subscriptionPane.classList.contains('editing');
     setSubscriptionEditing(!editing);
@@ -957,7 +994,7 @@
     try {
       await api('/api/subscriptions/move', { method: 'POST', body: JSON.stringify(payload) });
       setSubscriptionMovePending(false);
-      sessionStorage.setItem('subscriptionEditMode', subscriptionPane.classList.contains('editing') ? '1' : '0');
+      safeSession.setItem('subscriptionEditMode', subscriptionPane.classList.contains('editing') ? '1' : '0');
       location.reload();
     } catch (error) { setSubscriptionMovePending(false); notify(error.message); }
   });
@@ -981,7 +1018,7 @@
         position,
       }) });
       setSubscriptionMovePending(false);
-      sessionStorage.setItem('subscriptionEditMode', subscriptionPane.classList.contains('editing') ? '1' : '0');
+      safeSession.setItem('subscriptionEditMode', subscriptionPane.classList.contains('editing') ? '1' : '0');
       location.reload();
     } catch (error) { setSubscriptionMovePending(false); button.focus(); notify(error.message); }
   }));
@@ -1020,7 +1057,7 @@
       moveDialogRequestPending = false;
       setSubscriptionMovePending(false);
       moveSubscriptionDialog.close();
-      sessionStorage.setItem('subscriptionEditMode', subscriptionPane.classList.contains('editing') ? '1' : '0');
+      safeSession.setItem('subscriptionEditMode', subscriptionPane.classList.contains('editing') ? '1' : '0');
       location.reload();
     } catch (error) {
       moveDialogRequestPending = false;
@@ -1037,14 +1074,14 @@
     return output;
   }
   document.getElementById('group-form')?.addEventListener('submit', async event => {
-    event.preventDefault(); try { await api('/api/groups', { method: 'POST', body: JSON.stringify(formObject(event.target)) }); sessionStorage.setItem('subscriptionEditMode', '1'); location.reload(); } catch (error) { notify(error.message); }
+    event.preventDefault(); try { await api('/api/groups', { method: 'POST', body: JSON.stringify(formObject(event.target)) }); safeSession.setItem('subscriptionEditMode', '1'); location.reload(); } catch (error) { notify(error.message); }
   });
   document.getElementById('feed-form')?.addEventListener('submit', async event => {
     event.preventDefault();
     try {
       const result = await api('/api/feeds', { method: 'POST', body: JSON.stringify(formObject(event.target)) });
       document.getElementById('feed-dialog')?.close();
-      sessionStorage.setItem('subscriptionEditMode', '1');
+      safeSession.setItem('subscriptionEditMode', '1');
       const parent = result.parent_id
         ? subscriptionTree?.querySelector(`.group.subscription-entry[data-id="${result.parent_id}"] > .subscription-container`)
         : subscriptionTree;
@@ -1252,20 +1289,20 @@
     const profile = document.querySelector('.item-list')?.dataset.sortProfile || 'date';
     const storageKey = `rssItemSort:${profile}`;
     const perDayStorageKey = `rssItemPerDay:${profile}`;
-    const storedSort = localStorage.getItem(storageKey) || profile;
+    const storedSort = safeLocal.getItem(storageKey) || profile;
     itemSort.value = storedSort === 'relevance' ? 'relevance' : 'date';
     if (relevancePerDayLimit) {
-      const storedLimit = localStorage.getItem(perDayStorageKey) || '25';
+      const storedLimit = safeLocal.getItem(perDayStorageKey) || '25';
       relevancePerDayLimit.value = ['10', '25', '50', 'all'].includes(storedLimit) ? storedLimit : '25';
       relevancePerDayLimit.addEventListener('change', () => {
-        localStorage.setItem(perDayStorageKey, relevancePerDayLimit.value);
+        safeLocal.setItem(perDayStorageKey, relevancePerDayLimit.value);
         sortItems(itemSort.value);
         applyItemFilters();
       });
     }
     sortItems(itemSort.value);
     itemSort.addEventListener('change', () => {
-      localStorage.setItem(storageKey, itemSort.value);
+      safeLocal.setItem(storageKey, itemSort.value);
       sortItems(itemSort.value);
       applyItemFilters();
     });
@@ -1337,7 +1374,7 @@
     if (row.dataset.perDayVisible === '0' && relevancePerDayLimit && itemSort?.value === 'relevance') {
       relevancePerDayLimit.value = 'all';
       const profile = document.querySelector('.item-list')?.dataset.sortProfile || 'date';
-      localStorage.setItem(`rssItemPerDay:${profile}`, 'all');
+      safeLocal.setItem(`rssItemPerDay:${profile}`, 'all');
       sortItems(itemSort.value);
     }
     if (itemSearch) itemSearch.value = '';
@@ -1460,6 +1497,7 @@
   }));
   popupMenus.forEach(menu => menu.querySelector(':scope > summary')?.setAttribute('aria-expanded', 'false'));
   popupMenus.forEach(menu => menu.querySelectorAll('a, button').forEach(control => {
+    if (menu.matches('#summary-ai-config, #arxiv-scope-config') && !control.matches('a, [data-settings-open]')) return;
     control.addEventListener('click', () => { menu.open = false; });
   }));
   document.addEventListener('pointerdown', event => {
@@ -1473,7 +1511,10 @@
     if (event.key === 'Escape') closePopupMenus();
   });
   window.addEventListener('resize', () => closePopupMenus());
-  document.addEventListener('scroll', () => closePopupMenus(), true);
+  document.addEventListener('scroll', event => {
+    if (event.target instanceof Element && event.target.closest('details.action-menu, details.nav-menu, details.summary-ai-config')) return;
+    closePopupMenus();
+  }, true);
 
   document.querySelectorAll('.pane-resizer').forEach(handle => handle.addEventListener('pointerdown', event => {
     if (handle.dataset.resizer === 'left' && subscriptionPane?.classList.contains('editing')) return;
@@ -1482,8 +1523,8 @@
     const startLeft = parseFloat(styles.getPropertyValue('--left-width')); const startMiddle = parseFloat(styles.getPropertyValue('--middle-width'));
     const move = moveEvent => {
       const delta = moveEvent.clientX - startX;
-      if (handle.dataset.resizer === 'left') { const width = Math.max(190, Math.min(window.innerWidth * .45, startLeft + delta)); document.documentElement.style.setProperty('--left-width', `${width}px`); localStorage.setItem('rssLeftWidth', Math.round(width)); }
-      else { const width = Math.max(300, Math.min(window.innerWidth * .65, startMiddle + delta)); document.documentElement.style.setProperty('--middle-width', `${width}px`); localStorage.setItem('rssMiddleWidth', Math.round(width)); }
+      if (handle.dataset.resizer === 'left') { const width = Math.max(190, Math.min(window.innerWidth * .45, startLeft + delta)); document.documentElement.style.setProperty('--left-width', `${width}px`); safeLocal.setItem('rssLeftWidth', Math.round(width)); }
+      else { const width = Math.max(300, Math.min(window.innerWidth * .65, startMiddle + delta)); document.documentElement.style.setProperty('--middle-width', `${width}px`); safeLocal.setItem('rssMiddleWidth', Math.round(width)); }
     };
     const up = () => { handle.classList.remove('dragging'); handle.removeEventListener('pointermove', move); handle.removeEventListener('pointerup', up); };
     handle.addEventListener('pointermove', move); handle.addEventListener('pointerup', up);
@@ -1555,7 +1596,7 @@
   });
   if ('serviceWorker' in navigator) {
     const offline = document.querySelector('meta[name="offline-cache-enabled"]')?.content === 'true';
-    if (offline) navigator.serviceWorker.register('/static/service-worker.js?v=0.24.3-reliability1').catch(() => {});
+    if (offline) navigator.serviceWorker.register('/static/service-worker.js?v=0.25.0-rc5').catch(() => {});
     else Promise.all([
       navigator.serviceWorker.getRegistrations().then(registrations => Promise.all(
         registrations.map(registration => registration.unregister())

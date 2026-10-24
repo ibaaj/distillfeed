@@ -17,9 +17,10 @@ from flask import Flask, abort, jsonify, render_template, request, send_file, se
 from werkzeug.exceptions import BadRequest
 
 from .ai_policy import build_plan, effective_feed_mode, effective_group_modes
+from .interests import scope_interests, validate_interests
 from .ai_readiness import arxiv_readiness, blocked_result, ordinary_readiness
 from .ai_queue import queue_dashboard, set_item_disposition
-from .backup import build_backup, restore_backup
+from .backup import build_backup, restore_backup, MAX_BACKUP_ARCHIVE_BYTES
 from .config import (
     Config,
     OPENAI_MODEL_PRICING,
@@ -83,6 +84,9 @@ from .service import run_refresh, run_summary, run_update_summaries, start_threa
 from .weather import get_weather
 
 LOGGER = logging.getLogger(__name__)
+
+
+from .reader_preferences import reader_options, VIEW_OPTIONS, RANGES
 
 
 def _strict_bool(value: Any) -> bool:
@@ -748,11 +752,11 @@ def _page_data(
         "scope_summary_item_budget": scope_summary_item_budget,
         "review_preference_group_id": review_preference_group_id,
         "review_display_mode": review_display_mode,
-        "review_default_preset": (
-            "everything" if not is_arxiv_scope
-            else "catch-up" if review_display_mode == "direct"
-            else "best-unread"
-        ),
+        "review_default_preset": default_review_preset(
+            resolve_review_scope(connection, group_id=group_id if not feed_id else None, feed_id=feed_id),
+            connection, preference=str(config.get("ui", "review_default_view", "adaptive")),
+        ) if group_id or feed_id else "everything",
+        "review_today": datetime.now(UTC).date().isoformat(),
         "review_default_sort": "ai" if is_arxiv_scope else "date",
         "summary_minimum_relevance": int(config.get("llm", "minimum_relevance", 70)),
         "summary_evidence_hours": int(config.get("llm", "rolling_digest_hours", 24)),
@@ -791,6 +795,23 @@ def _flatten_config(data: dict[str, Any]) -> list[dict[str, Any]]:
         "ui.subscription_font_size": ("Appearance", "Subscription text size"),
         "ui.item_font_size": ("Appearance", "Item text size"),
         "ui.summary_font_size": ("Appearance", "Summary text size"),
+        "ui.review_default_view": ("Reader & audio", 'Default view (adaptive: week → month → everything)'),
+        "ui.review_page_size": ("Reader & audio", 'Items per day page'),
+        "ui.review_compact_cards": ("Reader & audio", 'Compact item cards'),
+        "ui.review_show_rationale": ("Reader & audio", 'Show AI rationale preview in item lists'),
+        "ui.review_rationale_lines": ("Reader & audio", 'Maximum rationale preview lines'),
+        "ui.review_show_tags": ("Reader & audio", 'Show item tags'),
+        "ui.review_show_stats": ("Reader & audio", 'Show counts and active dates near the source title'),
+        "ui.audio_reading_enabled": ("Reader & audio", 'Enable local read aloud'),
+        "ui.audio_controls_expanded": ("Reader & audio", 'Expand audio reading controls on page load'),
+        "ui.tts_volume": ("Reader & audio", 'Read-aloud volume (0–1)'),
+        "ui.tts_rate": ("Reader & audio", 'Read-aloud speed (0.5–2)'),
+        "ui.tts_chunk_chars": ("Reader & audio", 'Maximum characters per speech segment'),
+        "ui.tts_pause_ms": ("Reader & audio", 'Pause between speech segments (milliseconds)'),
+        "ui.youtube_embed_enabled": ("Reader & audio", 'Allow click-to-play YouTube embeds'),
+        "ui.article_theatre_enabled": ("Reader & audio", 'Allow click-to-open article theatre'),
+        "ui.reader_theatre_wide": ("Reader & audio", 'Open media in wide theatre mode'),
+
         "llm.enabled": ("AI summaries", "Enable ordinary AI summaries"),
         "app.summary_language": ("AI summaries", "Summary language"),
         "app.interest_profile": ("AI summaries", "Topics and interests"),
@@ -867,6 +888,9 @@ def _flatten_config(data: dict[str, Any]) -> list[dict[str, Any]]:
                         "path": path, "section": prefix, "key": key, "value": value,
                         "type": type(value).__name__, "category": category, "label": label,
                         "common": path in metadata,
+                        **({"min": RANGES[key][0], "max": RANGES[key][1]} if prefix == "ui" and key in RANGES else {}),
+                        **({"options": VIEW_OPTIONS} if path == "ui.review_default_view" else {}),
+                        **({"options": (10, 25, 50)} if path == "ui.review_page_size" else {}),
                     }
                 )
 
@@ -1092,7 +1116,7 @@ def create_app(config_path: str | None = None) -> Flask:
     app.config.update(
         SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Strict",
         SESSION_COOKIE_SECURE=str(config.get("app", "mode")) == "production",
-        MAX_CONTENT_LENGTH=210 * 1024 * 1024,
+        MAX_CONTENT_LENGTH=MAX_BACKUP_ARCHIVE_BYTES + 8 * 1024 * 1024,
     )
     config_write_lock = threading.Lock()
     background_scheduler = BackgroundScheduler(config)
@@ -1104,7 +1128,7 @@ def create_app(config_path: str | None = None) -> Flask:
             "Content-Security-Policy",
             "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; "
             "form-action 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
-            "connect-src 'self'; worker-src 'self'",
+            "connect-src 'self'; worker-src 'self'; frame-src https:",
         )
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -1236,6 +1260,7 @@ def create_app(config_path: str | None = None) -> Flask:
             summary_language=config.get("app", "summary_language"),
             interest_profile=str(config.get("app", "interest_profile"))[:2000],
             config_fields=core_fields, ui=config.section("ui"),
+            reader_options=reader_options(config.section("ui")),
             arxiv_fields=arxiv_fields,
             app_mode=config.get("app", "mode"),
             arxiv_available="arxiv_digest" in available_plugin_names(),
@@ -1277,6 +1302,36 @@ def create_app(config_path: str | None = None) -> Flask:
         response.headers["Cache-Control"] = "no-store"
         return response
 
+    @app.get("/api/review/interests")
+    def review_source_interests_get():
+        try:
+            with connect(config.database_path) as connection:
+                scope = _review_scope(connection)
+                return jsonify(scope_interests(connection,scope,str(config.get("app","interest_profile",""))))
+        except ValueError as exc:
+            return _review_error(exc)
+
+    @app.post("/api/review/interests")
+    @mutation
+    def review_source_interests():
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            raise ValueError("Expected an object containing the selected group or feed and its interests")
+        with connect(config.database_path) as connection:
+            scope = _review_scope(connection, payload)
+            if request.method == "POST":
+                if scope.is_arxiv:
+                    return jsonify({"error":"arXiv uses its separate specialist prompt in module settings"}), 400
+                try:
+                    value = validate_interests(payload.get("value", ""))
+                except ValueError as exc:
+                    return _review_error(exc)
+                table = "feeds" if scope.kind == "feed" else "groups"
+                with transaction(connection, immediate=True):
+                    connection.execute(f"UPDATE {table} SET interest_profile=? WHERE id=?", (value,scope.scope_id))
+            result = scope_interests(connection, scope, str(config.get("app","interest_profile", "")))
+        return jsonify(result)
+
     @app.get("/api/review/days")
     def review_days():
         try:
@@ -1285,11 +1340,15 @@ def create_app(config_path: str | None = None) -> Flask:
                 scope = _review_scope(connection)
                 filters = parse_review_filters(
                     request.args, default_min_ai=minimum,
-                    default_preset=default_review_preset(scope),
+                    default_preset=default_review_preset(
+                        scope, connection, preference=str(config.get("ui", "review_default_view", "adaptive")),
+                    ),
+                    default_page_size=int(config.get("ui", "review_page_size", 25)),
                     default_sort=default_review_sort(scope),
                 )
                 result = list_review_days(
                     connection, scope, filters, minimum_relevance=minimum,
+                    before=str(request.args.get("before") or ""),
                 )
         except ValueError as exc:
             return _review_error(exc)
@@ -1305,7 +1364,10 @@ def create_app(config_path: str | None = None) -> Flask:
                 scope = _review_scope(connection)
                 filters = parse_review_filters(
                     request.args, default_min_ai=minimum,
-                    default_preset=default_review_preset(scope),
+                    default_preset=default_review_preset(
+                        scope, connection, preference=str(config.get("ui", "review_default_view", "adaptive")),
+                    ),
+                    default_page_size=int(config.get("ui", "review_page_size", 25)),
                     default_sort=default_review_sort(scope),
                 )
                 result = list_review_day_items(
@@ -1709,17 +1771,14 @@ def create_app(config_path: str | None = None) -> Flask:
                         f"""SELECT i.*,f.title AS feed_title,g.title AS group_title,
                                   ap.llm_score AS rank_score,ap.why AS rank_rationale,
                                   'ArXiv AI score' AS rank_label,ap.local_score,
-                                  ap.final_score,ap.primary_category,ap.announced_at,
-                                  ap.submitted_at,ap.announcement_day,ap.announcement_source
+                                  ap.final_score,ap.primary_category
                              FROM distillfeed_arxiv_papers ap
                              JOIN items i ON i.id=ap.item_id
                              JOIN feeds f ON f.id=i.feed_id
                              JOIN groups g ON g.id=f.group_id
                              WHERE ap.llm_score IS NOT NULL AND {category_sql}
                              ORDER BY ap.llm_score DESC,ap.final_score DESC,
-                                      ap.announcement_day IS NULL,
-                                      COALESCE(ap.announced_at,ap.submitted_at,i.published_at,i.discovered_at) DESC,
-                                      i.id DESC
+                                      COALESCE(i.published_at,i.discovered_at) DESC,i.id DESC
                              LIMIT ? OFFSET ?""",
                         [*category_parameters, page_size, (page - 1) * page_size],
                     ).fetchall()
@@ -1745,22 +1804,18 @@ def create_app(config_path: str | None = None) -> Flask:
         query = str(request.args.get("q", "")).strip()[:200]
         selected_category = str(request.args.get("category", "")).strip()[:40]
         selected_sort = str(request.args.get("sort", "newest")).strip().casefold()
-        arxiv_date_order = (
-            "ap.announcement_day IS NULL,"
-            "COALESCE(ap.announced_at,ap.submitted_at,i.published_at,i.discovered_at)"
-        )
         sort_options = {
-            "newest": f"{arxiv_date_order} DESC,i.id DESC",
-            "oldest": f"{arxiv_date_order} ASC,i.id ASC",
-            "ai-high": f"ap.llm_score IS NULL,ap.llm_score DESC,{arxiv_date_order} DESC",
-            "ai-low": f"ap.llm_score IS NULL,ap.llm_score ASC,{arxiv_date_order} DESC",
-            "local-high": f"ap.local_score IS NULL,ap.local_score DESC,{arxiv_date_order} DESC",
-            "local-low": f"ap.local_score IS NULL,ap.local_score ASC,{arxiv_date_order} DESC",
-            "combined-high": f"ap.final_score IS NULL,ap.final_score DESC,{arxiv_date_order} DESC",
-            "combined-low": f"ap.final_score IS NULL,ap.final_score ASC,{arxiv_date_order} DESC",
-            "status": f"CASE WHEN ap.evaluation_status='pending' THEN 0 WHEN ap.evaluation_status='screened_out' THEN 1 WHEN ap.decision='keep' THEN 2 ELSE 3 END,{arxiv_date_order} DESC",
+            "newest": "COALESCE(i.published_at,i.discovered_at) DESC,i.id DESC",
+            "oldest": "COALESCE(i.published_at,i.discovered_at) ASC,i.id ASC",
+            "ai-high": "ap.llm_score IS NULL,ap.llm_score DESC,COALESCE(i.published_at,i.discovered_at) DESC",
+            "ai-low": "ap.llm_score IS NULL,ap.llm_score ASC,COALESCE(i.published_at,i.discovered_at) DESC",
+            "local-high": "ap.local_score IS NULL,ap.local_score DESC,COALESCE(i.published_at,i.discovered_at) DESC",
+            "local-low": "ap.local_score IS NULL,ap.local_score ASC,COALESCE(i.published_at,i.discovered_at) DESC",
+            "combined-high": "ap.final_score IS NULL,ap.final_score DESC,COALESCE(i.published_at,i.discovered_at) DESC",
+            "combined-low": "ap.final_score IS NULL,ap.final_score ASC,COALESCE(i.published_at,i.discovered_at) DESC",
+            "status": "CASE WHEN ap.evaluation_status='pending' THEN 0 WHEN ap.evaluation_status='screened_out' THEN 1 WHEN ap.decision='keep' THEN 2 ELSE 3 END,COALESCE(i.published_at,i.discovered_at) DESC",
             "title": "i.title COLLATE NOCASE,i.id DESC",
-            "category": f"ap.primary_category COLLATE NOCASE,{arxiv_date_order} DESC",
+            "category": "ap.primary_category COLLATE NOCASE,COALESCE(i.published_at,i.discovered_at) DESC",
         }
         if selected_sort not in sort_options:
             selected_sort = "newest"
@@ -1837,9 +1892,7 @@ def create_app(config_path: str | None = None) -> Flask:
                     f"""SELECT i.*,f.title AS feed_title,ap.arxiv_id,ap.pdf_url,
                                 ap.local_score,ap.llm_score,ap.final_score,ap.decision,
                                 ap.why,ap.evaluation_status,ap.local_reasons_json,
-                                ap.categories_json,ap.primary_category,ap.submitted_at,
-                                ap.updated_at AS arxiv_updated_at,ap.announced_at,
-                                ap.announcement_day,ap.announcement_source
+                                ap.categories_json,ap.primary_category
                            FROM distillfeed_arxiv_papers ap
                            JOIN items i ON i.id=ap.item_id
                            JOIN feeds f ON f.id=i.feed_id
@@ -1870,6 +1923,10 @@ def create_app(config_path: str | None = None) -> Flask:
             configured_categories=configured_categories,
         )
 
+    @app.errorhandler(413)
+    def upload_too_large(_error):
+        return jsonify({"error": "Upload exceeds the 1 GiB backup limit (or the server proxy limit). Use the local restore command for proxy-limited uploads."}), 413
+
     @app.get("/api/backup")
     def download_backup():
         timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -1897,12 +1954,12 @@ def create_app(config_path: str | None = None) -> Flask:
         owner = secrets.token_urlsafe(24)
         lock_connection = connect(config.database_path)
         if not acquire_lock(
-            lock_connection, "maintenance", owner, ttl_minutes=30, exclusive=True
+            lock_connection, "maintenance", owner, ttl_minutes=120, exclusive=True
         ):
             lock_connection.close()
             return jsonify({"error": "Wait for active refresh, summary, or restore work to finish"}), 409
         try:
-            safety = restore_backup(config, uploaded.read())
+            safety = restore_backup(config, uploaded.stream)
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         finally:

@@ -36,6 +36,11 @@ jobs:
       - run: node --check rss_reader/static/ai.js
       - run: node --check rss_reader/static/summary.js
       - run: node --check rss_reader/static/notifications.js
+      - run: node --check rss_reader/static/review.js
+      - run: node --check rss_reader/static/reader-tools.js
+      - run: node tests/review_state.test.js
+      - run: node tests/reader025_state.test.js
+      - run: node tests/reader_rc2_state.test.js
       - run: sh -n deployment/start.sh
       - run: python -m pip check
       - run: python -m pip wheel --no-deps --wheel-dir dist .

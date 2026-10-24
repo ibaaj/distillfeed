@@ -8,7 +8,7 @@
   const FILTER_FIELDS = Object.freeze([
     'q', 'read', 'saved', 'ai', 'decision', 'min_ai', 'source', 'from', 'to', 'sort', 'page_size',
   ]);
-  const PRESETS = new Set(['best-unread', 'catch-up', 'today', 'awaiting-ai', 'starred', 'everything', 'custom']);
+  const PRESETS = new Set(['current-week', 'current-month', 'last-5-days', 'best', 'best-unread', 'best-read', 'today', 'awaiting-ai', 'starred', 'everything', 'custom']);
   const READ = new Set(['all', 'unread', 'read']);
   const SAVED = new Set(['all', 'starred', 'read-later']);
   const AI = new Set(['all', 'scored', 'pending', 'not-sent']);
@@ -33,8 +33,7 @@
   function defaultPreset(options = {}) {
     const configured = String(options.defaultPreset || '').trim();
     if (PRESETS.has(configured) && configured !== 'custom') return configured;
-    if (!options.isArxiv) return 'everything';
-    return normalizeDisplayMode(options.displayMode) === 'direct' ? 'catch-up' : 'best-unread';
+    return 'current-week';
   }
 
   function defaultSort(options = {}) {
@@ -48,10 +47,16 @@
     const defaultMinAI = clampInteger(options.defaultMinAI, 70, 0, 100);
     const base = {
       preset, q: '', read: 'all', saved: 'all', ai: 'all', decision: 'all',
-      min_ai: 0, source: 0, from: '', to: '', sort: defaultSort(options), page_size: 25,
+      min_ai: 0, source: 0, from: '', to: '', sort: defaultSort(options), page_size: PAGE.has(Number(options.defaultPageSize)) ? Number(options.defaultPageSize) : 25,
     };
-    if (preset === 'best-unread') Object.assign(base, { read: 'unread', ai: 'scored', decision: 'keep', min_ai: defaultMinAI });
-    else if (preset === 'catch-up') Object.assign(base, { read: 'unread' });
+    if (['best', 'best-unread', 'best-read'].includes(preset)) {
+      Object.assign(base, { read: preset === 'best-unread' ? 'unread' : preset === 'best-read' ? 'read' : 'all', ai: 'scored', decision: 'keep', min_ai: defaultMinAI, sort: 'ai' });
+    } else if (preset === 'current-week' || preset === 'last-5-days') {
+      const start = new Date(`${today}T00:00:00Z`);
+      start.setUTCDate(start.getUTCDate() - (preset === 'last-5-days' ? 4 : (start.getUTCDay() + 6) % 7));
+      Object.assign(base, { from: start.toISOString().slice(0, 10), to: today });
+    }
+    else if (preset === 'current-month') Object.assign(base, { from: `${today.slice(0, 7)}-01`, to: today });
     else if (preset === 'today') Object.assign(base, { from: today, to: today });
     else if (preset === 'awaiting-ai') Object.assign(base, { ai: 'pending', sort: 'local' });
     else if (preset === 'starred') Object.assign(base, { saved: 'starred' });
@@ -59,6 +64,10 @@
   }
 
   function normalizeFilters(input = {}, options = {}) {
+    if (input.preset === 'catch-up') {
+      input = { ...input, preset: 'last-5-days', read: 'all' };
+      delete input.from; delete input.to;
+    }
     const preset = PRESETS.has(String(input.preset || '')) ? String(input.preset) : defaultPreset(options);
     const defaults = presetDefaults(preset, options);
     const value = { ...defaults, ...input, preset };
@@ -81,6 +90,7 @@
       normalized.min_ai = 0;
       normalized.decision = 'all';
     }
+    if (normalized.from && normalized.to && normalized.from > normalized.to) normalized.to = normalized.from;
     return normalized;
   }
 
@@ -109,6 +119,17 @@
     return parts.join(' · ');
   }
 
+  // Keep the selected date window adjacent to the main results count.
+  // It is presentation only: the server retains authority over filtering.
+  function dateRangeLabel(filters = {}) {
+    const from = validDay(filters.from);
+    const to = validDay(filters.to);
+    if (from && to) return `${from} – ${to}`;
+    if (from) return `From ${from}`;
+    if (to) return `Through ${to}`;
+    return '';
+  }
+
   function contentToggleLabel(open = false) {
     return open ? 'Hide content' : 'View content';
   }
@@ -129,16 +150,17 @@
     return {
       filters: normalizeFilters(filters, options), generation: 0,
       status: 'idle', error: '', counts: {}, sources: [], days: [],
-      defaultOpenDay: '', displayMode: normalizeDisplayMode(options.displayMode),
+      nextDayCursor: '', hasMoreDays: false, defaultOpenDay: '', displayMode: normalizeDisplayMode(options.displayMode),
       openDays: {}, dayData: {}, openItems: {}, itemDetails: {},
       readMutations: {}, finishingDays: {}, activeDaysRequestId: '',
+      mutationRevision: 0, itemOverrides: {}, dayReadOverrides: {},
     };
   }
 
   function resetForFilters(state, filters) {
     return {
       ...state, filters, generation: state.generation + 1, status: 'loading', error: '',
-      counts: {}, days: [], defaultOpenDay: '', dayData: {}, openItems: {}, itemDetails: {},
+      counts: {}, days: [], defaultOpenDay: '', nextDayCursor: '', hasMoreDays: false, activeDaysRequestId: '', dayData: {}, openItems: {}, itemDetails: {},
     };
   }
 
@@ -154,6 +176,42 @@
       dayData[day] = items === data.items ? data : { ...data, items };
     });
     return changed ? { ...state, dayData } : state;
+  }
+
+  function applyRead(state, itemId, read) {
+    const item = Object.values(state.dayData).flatMap(data => data.items).find(item => Number(item.id) === Number(itemId));
+    if (!item) return state;
+    const delta = Number(Boolean(item.is_read)) - Number(Boolean(read));
+    const changed = replaceItem(state, itemId, entry => ({ ...entry, is_read: Boolean(read) }));
+    const days = changed.days.map(day => {
+      if (String(day.day) !== String(item.day)) return day;
+      const unread = Math.max(0, Number(day.unread || 0) + delta);
+      return { ...day, unread, complete: unread === 0 };
+    });
+    return { ...changed, days, counts: { ...changed.counts, unread: Math.max(0, Number(changed.counts.unread || 0) + delta) } };
+  }
+
+  // A request started before a mutation may finish after it. Retain only the
+  // fields changed since that request; a fresh request remains authoritative.
+  function rememberFields(state, itemId, fields) {
+    const revision = Number(state.mutationRevision || 0) + 1;
+    const previous = state.itemOverrides?.[itemId] || {};
+    const changes = { ...previous };
+    Object.entries(fields).forEach(([field, value]) => { changes[field] = { value, revision }; });
+    return { ...state, mutationRevision: revision,
+      itemOverrides: { ...(state.itemOverrides || {}), [itemId]: changes } };
+  }
+
+  function overlayMutations(state, item, requestRevision) {
+    const changed = { ...item };
+    const dayOverride = state.dayReadOverrides?.[item.day];
+    if (dayOverride > requestRevision) changed.is_read = true;
+    Object.entries(state.itemOverrides?.[item.id] || {}).forEach(([field, entry]) => {
+      if (entry.revision > requestRevision || (field === 'is_read' && state.readMutations[item.id])) {
+        if (field !== 'is_read' || !dayOverride || entry.revision >= dayOverride) changed[field] = entry.value;
+      }
+    });
+    return changed;
   }
 
   function reducer(state, action) {
@@ -187,38 +245,40 @@
       case 'RECEIVE_DAYS': {
         if (action.generation !== state.generation || String(action.requestId || '') !== state.activeDaysRequestId) return state;
         const payload = action.payload || {};
-        const days = payload.days || [];
+        const combinedDays = action.append ? [...state.days, ...(payload.days || [])] : (payload.days || []);
+        const seenDays = new Set();
+        const days = combinedDays.filter(day => { if (seenDays.has(day.day)) return false; seenDays.add(day.day); return true; });
         const availableDays = new Set(days.map(day => String(day.day || '')));
         const serverMode = normalizeDisplayMode(payload.scope?.review_display_mode || state.displayMode);
         const modeChanged = serverMode !== state.displayMode;
         const openDays = modeChanged ? {} : Object.fromEntries(
           Object.entries(state.openDays)
-            .filter(([day, open]) => availableDays.has(day) && typeof open === 'boolean'),
+            .filter(([day, open]) => availableDays.has(day) && day !== 'undated' && typeof open === 'boolean'),
         );
         if (serverMode === 'direct') {
           days.forEach(day => {
             const key = String(day.day || '');
-            if (key && !Object.prototype.hasOwnProperty.call(openDays, key)) openDays[key] = true;
+            if (key && key !== 'undated' && !Object.prototype.hasOwnProperty.call(openDays, key)) openDays[key] = true;
           });
-        } else if (!Object.keys(openDays).length && payload.default_open_day) {
+        } else if (!Object.keys(openDays).length && payload.default_open_day && payload.default_open_day !== 'undated') {
           openDays[payload.default_open_day] = true;
         }
         return {
           ...state, status: 'ready', error: '', activeDaysRequestId: '', counts: payload.counts || {},
-          sources: payload.sources || [], days,
+          sources: payload.sources || [], days, nextDayCursor: payload.next_day_cursor || '', hasMoreDays: Boolean(payload.has_more_days),
           defaultOpenDay: payload.default_open_day || '', displayMode: serverMode, openDays,
         };
       }
       case 'FAIL_DAYS':
         return action.generation === state.generation && String(action.requestId || '') === state.activeDaysRequestId
-          ? { ...state, status: 'error', error: action.error || 'Review could not be loaded', activeDaysRequestId: '' }
+          ? { ...state, status: state.days.length ? 'ready' : 'error', error: action.error || 'Review could not be loaded', activeDaysRequestId: '' }
           : state;
       case 'SET_DISPLAY_MODE': {
         const displayMode = normalizeDisplayMode(action.mode);
         if (displayMode === state.displayMode) return state;
         const openDays = {};
         if (displayMode === 'direct') {
-          state.days.forEach(day => { openDays[day.day] = true; });
+          state.days.forEach(day => { openDays[day.day] = day.day !== 'undated'; });
         } else if (state.defaultOpenDay) {
           state.days.forEach(day => { openDays[day.day] = day.day === state.defaultOpenDay; });
         }
@@ -234,6 +294,7 @@
           dayData: { ...state.dayData, [action.day]: {
             ...previous, loading: true, error: '', requestGeneration: action.generation,
             requestId: String(action.requestId || ''), append: Boolean(action.append),
+            mutationRevision: Number(state.mutationRevision || 0),
           } },
         };
       }
@@ -241,7 +302,7 @@
         if (action.generation !== state.generation) return state;
         const previous = state.dayData[action.day] || { items: [] };
         if (previous.requestGeneration !== action.generation || previous.requestId !== String(action.requestId || '')) return state;
-        const incoming = action.payload?.items || [];
+        const incoming = (action.payload?.items || []).map(item => overlayMutations(state, item, Number(previous.mutationRevision || 0)));
         const combined = action.append ? [...previous.items, ...incoming] : incoming;
         const seen = new Set();
         const items = combined.filter(item => {
@@ -285,22 +346,28 @@
         if (state.readMutations[action.itemId]) return state;
         const current = Object.values(state.dayData).flatMap(data => data.items).find(item => Number(item.id) === Number(action.itemId));
         if (!current) return state;
-        const next = replaceItem(state, action.itemId, item => ({ ...item, is_read: Boolean(action.read) }));
-        return { ...next, readMutations: { ...state.readMutations, [action.itemId]: { token: action.token, previous: Boolean(current.is_read) } } };
+        const next = rememberFields(applyRead(state, action.itemId, action.read), action.itemId, { is_read: Boolean(action.read) });
+        return { ...next, readMutations: { ...state.readMutations, [action.itemId]: { token: action.token, previous: Boolean(current.is_read), requested: Boolean(action.read) } } };
       }
       case 'CONFIRM_READ': {
         const mutation = state.readMutations[action.itemId];
         if (!mutation || mutation.token !== action.token) return state;
         const readMutations = { ...state.readMutations }; delete readMutations[action.itemId];
-        return { ...state, readMutations };
+        const confirmed = rememberFields(applyRead(state, action.itemId, mutation.requested), action.itemId, { is_read: mutation.requested });
+        return { ...confirmed, readMutations };
       }
       case 'ROLLBACK_READ': {
         const mutation = state.readMutations[action.itemId];
         if (!mutation || mutation.token !== action.token) return state;
-        const restored = replaceItem(state, action.itemId, item => ({ ...item, is_read: mutation.previous }));
+        const restored = rememberFields(applyRead(state, action.itemId, mutation.previous), action.itemId, { is_read: mutation.previous });
         const readMutations = { ...restored.readMutations }; delete readMutations[action.itemId];
         return { ...restored, readMutations };
       }
+      case 'SAVED_CONFIRMED':
+        if (!['is_starred', 'is_read_later'].includes(action.field)) return state;
+        return rememberFields(replaceItem(state, action.itemId, item => ({ ...item, [action.field]: Boolean(action.value) })), action.itemId, { [action.field]: Boolean(action.value) });
+      case 'LOADED_READ_SUCCESS':
+        return (action.itemIds || []).reduce((next, id) => rememberFields(applyRead(next, id, true), id, { is_read: true }), state);
       case 'FINISH_DAY_START':
         if (state.finishingDays[action.day]) return state;
         return { ...state, finishingDays: { ...state.finishingDays, [action.day]: true } };
@@ -309,7 +376,11 @@
         const data = state.dayData[action.day];
         const dayData = data ? { ...state.dayData, [action.day]: { ...data, items: data.items.map(item => ({ ...item, is_read: true })) } } : state.dayData;
         const finishingDays = { ...state.finishingDays }; delete finishingDays[action.day];
-        return { ...state, days, dayData, finishingDays, openDays: { ...state.openDays, [action.day]: false } };
+        const oldUnread = Number(state.days.find(day => day.day === action.day)?.unread || 0);
+        const revision = Number(state.mutationRevision || 0) + 1;
+        return { ...state, days, dayData, finishingDays, mutationRevision: revision,
+          dayReadOverrides: { ...(state.dayReadOverrides || {}), [action.day]: revision },
+          counts: { ...state.counts, unread: Math.max(0, Number(state.counts.unread || 0) - oldUnread) } };
       }
       case 'FINISH_DAY_FAIL': {
         const finishingDays = { ...state.finishingDays }; delete finishingDays[action.day];
@@ -322,7 +393,7 @@
 
   return {
     FILTER_FIELDS, presetDefaults, defaultPreset, defaultSort, normalizeFilters,
-    hasActiveFilters, countSummary, contentToggleLabel, dayReadActionLabel,
+    hasActiveFilters, countSummary, dateRangeLabel, contentToggleLabel, dayReadActionLabel,
     normalizeDisplayMode, initialState, reducer,
   };
 }));

@@ -16,15 +16,17 @@
   <meta name="review-preference-group-id" content="{{ review_preference_group_id or '' }}">
   <meta name="review-display-mode" content="{{ review_display_mode or 'daily' }}">
   <meta name="review-default-preset" content="{{ review_default_preset or ('best-unread' if is_arxiv_scope else 'everything') }}">
+  <meta name="review-today" content="{{ review_today|default('', true) }}">
+  <script id="reader-preferences" type="application/json">{{ reader_options|default({})|tojson }}</script>
   <meta name="review-default-sort" content="{{ review_default_sort or ('ai' if is_arxiv_scope else 'date') }}">
   <meta name="arxiv-digest-scope" content="{{ 'true' if is_arxiv_scope else 'false' }}">
   <meta name="item-sort-profile" content="{{ item_sort_profile or 'date' }}">
-  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='distillfeed-icon.svg', v='0.24.3-reliability1') }}">
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='distillfeed-icon.svg', v='0.25.0-rc5') }}">
   <link rel="manifest" href="{{ url_for('static', filename='manifest.webmanifest') }}">
   <meta name="theme-color" content="#315f9c">
   <title>DistillFeed</title>
-  <script src="{{ url_for('static', filename='layout-init.js', v='0.24.3-reliability1') }}"></script>
-  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='0.24.3-reliability1') }}">
+  <script src="{{ url_for('static', filename='layout-init.js', v='0.25.0-rc5') }}"></script>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='0.25.0-rc5') }}">
 </head>
 {% set reader_notices = system_notices|default([], true) %}
 <body class="reader-page{% if ui.dark_mode %} dark-mode{% endif %}">
@@ -135,23 +137,37 @@
     </aside>
     <div class="pane-resizer" data-resizer="left" role="separator" aria-label="Resize subscriptions pane"></div>
 
-    <section id="review-app" class="review-pane" data-default-min-ai="{{ summary_minimum_relevance }}">
+    <section id="review-app" class="review-pane{% if ui.review_compact_cards|default(true) %} compact-cards{% endif %}" data-default-min-ai="{{ summary_minimum_relevance }}">
       <header class="review-heading">
-        <span class="review-heading-title"><strong id="items-scope-title">{{ scope_title or 'Choose a subscription' }}</strong><span>{{ scope_item_count }} stored item{% if scope_item_count != 1 %}s{% endif %}</span></span>
+        <div class="review-heading-title"><strong id="items-scope-title">{{ scope_title or 'Choose a subscription' }}</strong></div>
         <span class="review-heading-actions">
           {% if selected_feed_id or selected_group_id %}
-            <label class="review-layout-control" title="Saved for this OPML group and inherited by its feeds. Show items directly opens each day and loads its item list as it approaches the viewport."><span>Day view</span><select id="review-display-mode" aria-label="Default day view for this group"><option value="daily" {% if review_display_mode == 'daily' %}selected{% endif %}>Open one day</option><option value="direct" {% if review_display_mode == 'direct' %}selected{% endif %}>Show items directly</option></select></label>
-            <button id="scope-refresh-button" class="summary-scope-action secondary-action" aria-label="{% if is_arxiv_scope %}Check configured arXiv categories{% else %}Check RSS and Atom feeds in {{ scope_title }}{% endif %}" {% if 'summary-update' in locks or 'feed-refresh' in locks or 'llm-summary' in locks %}disabled{% endif %}><span aria-hidden="true">↻</span><span>{% if is_arxiv_scope %}Check arXiv{% else %}Check feeds{% endif %}</span></button>
-            <button id="scope-update-button" class="summary-scope-action primary-action" data-ai-off="{{ 'true' if scope_ai_mode == 'off' else 'false' }}" aria-label="{% if is_arxiv_scope %}Check arXiv and process every remaining daily update{% elif scope_ai_mode == 'off' %}Enable AI for {{ scope_title }}{% else %}Update the summary for {{ scope_title }}{% endif %}" {% if 'summary-update' in locks or 'feed-refresh' in locks or 'llm-summary' in locks %}disabled{% endif %}><span aria-hidden="true">✦</span><span>{% if is_arxiv_scope %}Update remaining arXiv{% elif scope_ai_mode == 'off' %}Enable AI{% else %}Update summaries{% endif %}</span></button>
-            {% if not is_arxiv_scope %}<details id="summary-ai-config" class="summary-ai-config action-menu" data-source-kind="{{ 'feeds' if selected_feed_id else 'groups' }}" data-source-id="{{ selected_feed_id or selected_group_id }}"><summary aria-label="Configure AI for {{ scope_title }}">AI configuration</summary><div>
+            <label class="review-layout-control" title="Choose how day sections open. Saved for this OPML group and inherited by its feeds."><span aria-hidden="true">Day view</span><select id="review-display-mode" aria-label="Day view: choose open one day or show items directly"><option value="daily" {% if review_display_mode == 'daily' %}selected{% endif %}>Open one day</option><option value="direct" {% if review_display_mode == 'direct' %}selected{% endif %}>Show items directly</option></select></label>
+            <button id="scope-refresh-button" class="summary-scope-action secondary-action" aria-label="{% if is_arxiv_scope %}Check configured arXiv categories{% else %}Check RSS and Atom feeds in {{ scope_title }}{% endif %}" {% if 'summary-update' in locks or 'feed-refresh' in locks or 'llm-summary' in locks %}disabled{% endif %}><span aria-hidden="true">↻</span><span>{% if is_arxiv_scope %}Check arXiv{% else %}Check feeds of {{ scope_title }}{% endif %}</span></button>
+            <button id="scope-update-button" class="summary-scope-action primary-action" data-ai-off="{{ 'true' if scope_ai_mode == 'off' else 'false' }}" aria-label="{% if is_arxiv_scope %}Check arXiv and process every remaining daily update{% elif scope_ai_mode == 'off' %}Enable AI for {{ scope_title }}{% else %}Update the summary for {{ scope_title }}{% endif %}" {% if 'summary-update' in locks or 'feed-refresh' in locks or 'llm-summary' in locks %}disabled{% endif %}><span aria-hidden="true">✦</span><span>{% if is_arxiv_scope %}Update remaining arXiv{% elif scope_ai_mode == 'off' %}Enable AI{% else %}Update summaries of {{ scope_title }}{% endif %}</span></button>
+            {% if not is_arxiv_scope %}<details id="summary-ai-config" class="summary-ai-config action-menu" data-source-kind="{{ 'feeds' if selected_feed_id else 'groups' }}" data-source-id="{{ selected_feed_id or selected_group_id }}"><summary aria-label="AI configuration for {{ scope_title }}" title="AI for {{ scope_title }}">AI for {{ scope_title }}</summary><div class="scope-config-popover">
               <label><span>Use AI</span><select data-summary-source-field="ai_mode">{% if selected_feed_id %}<option value="inherit" {% if scope_ai_own_mode == 'inherit' %}selected{% endif %}>Follow group</option>{% endif %}<option value="automatic" {% if scope_ai_own_mode == 'automatic' %}selected{% endif %}>Automatic</option><option value="manual" {% if scope_ai_own_mode == 'manual' %}selected{% endif %}>Only on request</option><option value="off" {% if scope_ai_own_mode == 'off' %}selected{% endif %}>Never use AI</option></select></label>
               {% if not selected_feed_id %}<label><span>Priority in global updates</span><select data-summary-source-field="ai_priority"><option value="high" {% if scope_ai_priority == 'high' %}selected{% endif %}>High</option><option value="normal" {% if scope_ai_priority == 'normal' %}selected{% endif %}>Normal</option><option value="low" {% if scope_ai_priority == 'low' %}selected{% endif %}>Low</option></select></label><label><span>Automatic interval</span><select data-summary-source-field="summary_interval_hours"><option value="0" {% if scope_summary_interval_hours == 0 %}selected{% endif %}>Every scheduled update</option><option value="1" {% if scope_summary_interval_hours == 1 %}selected{% endif %}>At most hourly</option><option value="6" {% if scope_summary_interval_hours == 6 %}selected{% endif %}>At most every 6 hours</option><option value="12" {% if scope_summary_interval_hours == 12 %}selected{% endif %}>At most every 12 hours</option><option value="24" {% if scope_summary_interval_hours == 24 %}selected{% endif %}>At most daily</option><option value="168" {% if scope_summary_interval_hours == 168 %}selected{% endif %}>At most weekly</option></select></label><label><span>Maximum entries per update</span><input data-summary-source-field="summary_item_budget" type="number" min="0" max="1000" value="{{ scope_summary_item_budget }}"><small>0 lets the global workload decide.</small></label>{% else %}<p>This feed uses its group’s priority and schedule.</p>{% endif %}
               <button id="summary-ai-config-save" type="button">Save AI configuration</button>
-            </div></details>{% endif %}
+              <details id="review-interests" class="review-interests"><summary>Topics and interests</summary><label for="review-interests-text">What matters to you in {{ scope_title }}?</label><textarea id="review-interests-text" rows="4" maxlength="8000"></textarea><div><button type="button" id="review-interests-save">Save interests</button><span id="review-interests-status" role="status">Open to load the saved profile.</span></div><p>Empty text inherits the parent or global interests. Changes apply to future evaluations, not existing scores.</p></details>
+              <button type="button" class="scope-global-settings" data-settings-open="settings-ai">Global AI settings…</button>
+            </div></details>{% else %}<details id="arxiv-scope-config" class="summary-ai-config action-menu"><summary aria-label="AI configuration for {{ scope_title }}" title="AI for {{ scope_title }}">AI for {{ scope_title }}</summary><div><p>The arXiv digest uses its own ranking prompt and screening settings.</p><button type="button" data-settings-open="settings-arxiv">Open arXiv configuration</button></div></details>{% endif %}
           {% endif %}
-          <label class="summary-text-size">Text <input id="summary-font-size" type="range" min="10" max="24" value="{{ ui.summary_font_size }}"></label>
+          <span class="review-reader-utilities">
+          {% if selected_feed_id or selected_group_id %}
+            <details id="review-audio-disclosure" class="reader-audio-disclosure"{% if ui.audio_controls_expanded|default(false) and ui.audio_reading_enabled|default(true) %} open{% endif %}{% if not ui.audio_reading_enabled|default(true) %} hidden{% endif %}><summary aria-label="Audio reading for {{ scope_title }}" title="Audio reading for {{ scope_title }}"><svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5a10 10 0 0 1 0 14"/></svg><span class="sr-only">Audio reading for {{ scope_title }}</span></summary><div class="review-reader-bar">
+              <button type="button" id="review-speak-titles">Read loaded titles</button>
+              <label for="reader-voice">Local voice</label><select id="reader-voice" aria-label="Local read-aloud voice"></select>
+              <div class="reader-transport"><button type="button" id="reader-pause" disabled>Pause</button><button type="button" id="reader-stop" disabled>Stop</button></div>
+              <span id="reader-speech-status" role="status" aria-live="polite"></span>
+              <p class="reader-audio-note">Only starts on request. Closing these controls stops reading.</p><button type="button" id="reader-hide-audio">Hide audio controls</button><button type="button" data-settings-open="settings-reader-audio">Audio and reader settings…</button>
+            </div></details>
+          {% endif %}
+          <label class="summary-text-size reader-text-size">Text <input id="reader-font-size" aria-label="Reader text size" type="range" min="10" max="24" value="{{ ui.summary_font_size }}"><output id="reader-font-output" for="reader-font-size">{{ ui.summary_font_size }}</output></label><span id="reader-font-status" class="sr-only" role="status"></span>
+          </span>
           <button id="summary-help-button" class="summary-help-button" type="button" aria-label="How the review stream is updated" aria-haspopup="dialog">?</button>
         </span>
+        <div class="review-scope-meta"{% if not ui.review_show_stats|default(true) %} hidden{% endif %}><span id="review-result-status" class="review-result-status" role="status" aria-live="polite">Loading…</span><div id="review-active-filters" class="review-active-filters" hidden></div></div>
       </header>
 
       {% if scope_arxiv_error %}<div class="scope-status scope-status-error"><strong>arXiv AI update failed.</strong> {{ scope_arxiv_error }} Remaining work is preserved for retry. <button id="scope-update-inline" type="button">Retry remaining arXiv</button></div>
@@ -159,7 +175,7 @@
       {% elif scope_ai_mode == 'off' %}<div class="scope-status"><strong>AI is off for this source.</strong> Stored source text remains available. <button id="scope-enable-ai" type="button">Enable AI</button></div>{% endif %}
 
       <div class="review-toolbar" role="search" aria-label="Review filters">
-        <label><span>View</span><select id="review-preset"><option value="best-unread" {% if review_default_preset == 'best-unread' %}selected{% endif %}>Best unread</option><option value="catch-up" {% if review_default_preset == 'catch-up' %}selected{% endif %}>Catch up</option><option value="today" {% if review_default_preset == 'today' %}selected{% endif %}>Today</option><option value="awaiting-ai" {% if review_default_preset == 'awaiting-ai' %}selected{% endif %}>Awaiting AI</option><option value="starred" {% if review_default_preset == 'starred' %}selected{% endif %}>Starred</option><option value="everything" {% if review_default_preset == 'everything' %}selected{% endif %}>Everything</option><option value="custom">Custom</option></select></label>
+        <label><span>View</span><select id="review-preset"><option value="current-week" {% if review_default_preset == 'current-week' %}selected{% endif %}>Current week</option><option value="current-month" {% if review_default_preset == 'current-month' %}selected{% endif %}>Current month</option><option value="last-5-days" {% if review_default_preset == 'last-5-days' %}selected{% endif %}>Last 5 days</option><option value="best" {% if review_default_preset == 'best' %}selected{% endif %}>Best</option><option value="best-unread" {% if review_default_preset == 'best-unread' %}selected{% endif %}>Best unread</option><option value="best-read" {% if review_default_preset == 'best-read' %}selected{% endif %}>Best read</option><option value="today" {% if review_default_preset == 'today' %}selected{% endif %}>Today</option><option value="awaiting-ai" {% if review_default_preset == 'awaiting-ai' %}selected{% endif %}>Awaiting AI</option><option value="starred" {% if review_default_preset == 'starred' %}selected{% endif %}>Favorites</option><option value="everything" {% if review_default_preset == 'everything' %}selected{% endif %}>Everything</option><option value="custom" {% if review_default_preset == 'custom' %}selected{% endif %}>Custom</option></select></label>
         <label class="review-toolbar-search"><span>Search</span><input id="review-search" type="search" maxlength="200" placeholder="Title, author, summary, rationale or tag"></label>
         <label><span>Minimum AI</span><select id="review-min-ai"><option value="0">Any score</option><option value="50">50+</option><option value="60">60+</option><option value="70">70+</option><option value="80">80+</option><option value="90">90+</option><option value="95">95+</option></select></label>
         <label><span>Sort</span><select id="review-sort"><option value="ai" {% if review_default_sort == 'ai' %}selected{% endif %}>AI relevance</option><option value="date" {% if review_default_sort == 'date' %}selected{% endif %}>Newest first</option><option value="local" {% if review_default_sort == 'local' %}selected{% endif %}>Local score</option></select></label>
@@ -174,11 +190,14 @@
           <button id="review-reset" class="review-reset" type="button">Reset filters</button>
         </div></details>
       </div>
-      <div class="review-feedback"><div id="review-active-filters" class="review-active-filters" hidden></div><span id="review-result-status" class="review-result-status" role="status" aria-live="polite">Loading…</span></div>
+
+
+
       <div id="review-day-list" class="review-day-list"><div class="review-loading review-loading-page">Loading the review stream…</div></div>
     </section>
   </main>
 
+  <dialog id="reader-theatre" aria-labelledby="reader-theatre-title"><div class="reader-theatre-shell"><header><h2 id="reader-theatre-title">Reader</h2><button type="button" id="reader-wide">Theatre mode</button><button type="button" id="reader-close">Close</button></header><p id="reader-frame-notice"></p><p><a id="reader-external" target="_blank" rel="noopener noreferrer">Open original in a new tab</a></p><div id="reader-frame-container"></div></div></dialog>
   <div id="toast" role="status" aria-live="polite"></div>
 
   <dialog id="summary-help-dialog" class="summary-help-dialog" aria-labelledby="summary-help-title"><div class="summary-help-card"><header><h2 id="summary-help-title">{% if is_arxiv_scope %}How the daily arXiv digest works{% else %}How this summary is updated{% endif %}</h2><button id="summary-help-close" type="button" aria-label="Close help">×</button></header>{% if is_arxiv_scope %}<p><strong>Check arXiv</strong> reads every configured category and locally screens unseen papers. It does not call the ranking model.</p><p><strong>Update remaining arXiv</strong> first checks the configured categories, then ranks every locally eligible paper that still lacks an AI score. It also repairs missing historical daily digests. Work is partitioned by stored publication day, and already AI-scored papers are reused instead of re-ranked.</p><p>This specialist recipe, shortlist and ntfy threshold are separate from ordinary feed summaries.</p><a class="button-link" href="/?settings=arxiv">Open ArXiv module settings</a>{% else %}<p><strong>Check feeds</strong> reads the selected RSS and Atom documents and stores new feed entries. It does not open linked webpages or use AI.</p><p><strong>Update this summary</strong> checks those feeds, then sends waiting titles and feed-provided descriptions to your configured model. Each entry is evaluated once after a successful response; DistillFeed then publishes one new summary for this exact selection.</p><p>Entries excluded by you are never selected. Sources set to “Only on request” are included when you update their own summary.</p><a class="button-link" href="/?settings=ai">Open AI summary settings</a>{% endif %}</div></dialog>
@@ -229,13 +248,14 @@
 
   <dialog id="data-dialog"><div><h2>Backup and restore</h2><p>Download a portable snapshot containing SQLite, OPML, and a configuration reference.</p>
     <p class="data-downloads"><a class="button-link" href="/api/backup">Download backup</a><a class="button-link" href="/api/export-opml">Download subscriptions (OPML)</a></p>
-    <form id="restore-form"><label>Restore a backup<input name="backup" type="file" accept=".zip,application/zip" required></label><label class="checkbox-label"><input name="confirm" type="checkbox" required> I understand that current data will be replaced after a safety backup is created.</label>
+    <form id="restore-form"><label>Restore a backup (ZIP up to 1 GiB; database up to 4 GiB)<input name="backup" type="file" accept=".zip,application/zip" required></label><label class="checkbox-label"><input name="confirm" type="checkbox" required> I understand that current data will be replaced after a safety backup is created.</label>
     <div class="dialog-actions"><button class="dialog-cancel" type="button">Cancel</button><button type="submit">Restore data</button></div></form>
   </div></dialog>
 
   {% macro config_input(field) %}
     <label class="settings-field{% if field.type == 'bool' %} settings-field-toggle{% endif %}{% if field.path == 'app.interest_profile' or (field.widget is defined and field.widget == 'textarea') %} settings-field-wide{% endif %}"><span class="settings-field-label">{{ field.label }}</span>
       {% if field.path == 'app.mode' %}<select data-config-path="{{ field.path }}" data-type="str"><option value="local" {% if field.value == 'local' %}selected{% endif %}>Local · this computer only</option><option value="development" {% if field.value == 'development' %}selected{% endif %}>Development</option><option value="production" {% if field.value == 'production' %}selected{% endif %}>Production</option></select>
+      {% elif field.path == 'ui.review_default_view' %}<select data-config-path="{{ field.path }}" data-type="str">{% for value, label in (('adaptive','Automatic · week → month → everything'),('current-week','Current week'),('current-month','Current month'),('last-5-days','Last 5 days'),('today','Today'),('best','Best'),('best-unread','Best unread'),('best-read','Best read'),('awaiting-ai','Awaiting AI'),('starred','Favorites'),('everything','Everything')) %}<option value="{{ value }}" {% if field.value == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
       {% elif field.path == 'llm.provider' %}<select data-config-path="{{ field.path }}" data-type="str"><option value="openai" {% if field.value == 'openai' %}selected{% endif %}>OpenAI</option><option value="ollama" {% if field.value == 'ollama' %}selected{% endif %}>Ollama (local)</option></select>
       {% elif field.path == 'llm.model' %}<select data-config-path="{{ field.path }}" data-type="str">{% if field.value not in ('gpt-5.4-nano','gpt-5.4-mini') %}<option value="{{ field.value }}" selected>{{ field.value }} · Custom</option>{% endif %}<option value="gpt-5.4-nano" {% if field.value == 'gpt-5.4-nano' %}selected{% endif %}>Economy · GPT-5.4 nano</option><option value="gpt-5.4-mini" {% if field.value == 'gpt-5.4-mini' %}selected{% endif %}>Quality · GPT-5.4 mini</option></select>
       {% elif field.path == 'notifications.ntfy.priority' %}<select data-config-path="{{ field.path }}" data-type="str">{% for value in ('min','low','default','high','max') %}<option value="{{ value }}" {% if field.value == value %}selected{% endif %}>{{ value|capitalize }}</option>{% endfor %}</select>
@@ -245,12 +265,13 @@
       {% elif field.options is defined %}<select data-config-path="{{ field.path }}" data-type="{{ field.type }}">{% for value in field.options %}<option value="{{ value }}" {% if field.value == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select>
       {% elif field.widget is defined and field.widget == 'textarea' %}<textarea data-config-path="{{ field.path }}" data-type="{{ field.type }}" rows="{{ field.rows or 5 }}">{{ field.value }}</textarea>
       {% elif field.type == 'bool' %}<input class="settings-switch" data-config-path="{{ field.path }}" data-type="bool" type="checkbox" role="switch" {% if field.value %}checked{% endif %}>
-      {% elif field.type in ('int','float') %}<input data-config-path="{{ field.path }}" data-type="{{ field.type }}" type="number" step="{% if field.type == 'float' %}any{% else %}1{% endif %}" value="{{ field.value }}">
+      {% elif field.type in ('int','float') %}<input data-config-path="{{ field.path }}" data-type="{{ field.type }}" type="number"{% if field.min is defined %} min="{{ field.min }}" max="{{ field.max }}"{% endif %} step="{% if field.type == 'float' %}any{% else %}1{% endif %}" value="{{ field.value }}">
       {% else %}<input data-config-path="{{ field.path }}" data-type="str" value="{{ field.value }}">{% endif %}
     </label>
   {% endmacro %}
   {% set settings_categories = (
     ('Appearance', 'appearance', 'Aa', 'Text size and reading preferences'),
+    ('Reader & audio', 'reader-audio', '♫', 'Default view, compact cards, local speech and embedded media'),
     ('Weather', 'weather', '☁', 'Location and forecast language'),
     ('Feed updates', 'feed-updates', '↻', 'RSS and Atom checking, scheduling and completion alerts')
   ) %}
@@ -334,8 +355,9 @@
     </div>
   </form></dialog>
 
-  <script src="{{ url_for('static', filename='review-state.js', v='0.24.3-reliability1') }}" defer></script>
-  <script src="{{ url_for('static', filename='review.js', v='0.24.3-reliability1') }}" defer></script>
-  <script src="{{ url_for('static', filename='app.js', v='0.24.3-reliability1') }}" defer></script>
+  <script src="{{ url_for('static', filename='review-state.js', v='0.25.0-rc5') }}" defer></script>
+  <script src="{{ url_for('static', filename='reader-tools.js', v='0.25.0-rc5') }}" defer></script>
+  <script src="{{ url_for('static', filename='review.js', v='0.25.0-rc5') }}" defer></script>
+  <script src="{{ url_for('static', filename='app.js', v='0.25.0-rc5') }}" defer></script>
 </body>
 </html>

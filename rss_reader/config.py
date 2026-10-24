@@ -47,7 +47,7 @@ DEFAULTS: dict[str, Any] = {
         "initial_import_max_age_days": 30,
         "max_workers": 8,
         "max_workers_per_host": 2,
-        "user_agent": "DistillFeed/0.24.3 (+private single-user feed reader)",
+        "user_agent": "DistillFeed/0.25.0 (+private single-user feed reader)",
         "allow_private_urls": False,
         "generated_feed_directory": "",
         "retry_base_minutes": 15,
@@ -86,6 +86,22 @@ DEFAULTS: dict[str, Any] = {
         "subscription_font_size": 14,
         "item_font_size": 14,
         "summary_font_size": 16,
+        "review_default_view": "adaptive",
+        "review_page_size": 25,
+        "review_compact_cards": True,
+        "review_show_rationale": True,
+        "review_rationale_lines": 2,
+        "review_show_tags": True,
+        "review_show_stats": True,
+        "audio_reading_enabled": True,
+        "audio_controls_expanded": False,
+        "tts_volume": 0.65,
+        "tts_rate": 1.0,
+        "tts_chunk_chars": 600,
+        "tts_pause_ms": 120,
+        "youtube_embed_enabled": True,
+        "article_theatre_enabled": True,
+        "reader_theatre_wide": False,
     },
     "weather": {
         "enabled": True,
@@ -194,6 +210,8 @@ def load_config(path: str | Path | None = None) -> Config:
 
 
 def _validate(values: dict[str, Any]) -> None:
+    from .reader_preferences import validate_reader_preferences
+    validate_reader_preferences(values.get("ui", {}))
     app = values["app"]
     feeds = values["feeds"]
     llm = values["llm"]

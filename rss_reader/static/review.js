@@ -5,6 +5,9 @@
   const State = window.DistillFeedReviewState;
   if (!app || !State) return;
 
+  let preferences = {};
+  try { preferences = JSON.parse(document.getElementById('reader-preferences')?.textContent || '{}'); } catch (_) { /* validated defaults below */ }
+  app.style.setProperty('--rationale-lines', String(preferences.review_rationale_lines || 2));
   let csrf = document.querySelector('meta[name="csrf-token"]')?.content || '';
   const scope = {
     groupId: Number(document.querySelector('meta[name="selected-group-id"]')?.content || 0),
@@ -13,7 +16,7 @@
     title: document.getElementById('items-scope-title')?.textContent?.trim() || '',
   };
   const defaultMinAI = Number(app.dataset.defaultMinAi || 70);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = document.querySelector('meta[name="review-today"]')?.content || new Date().toISOString().slice(0, 10);
   const initialDisplayMode = State.normalizeDisplayMode(
     document.querySelector('meta[name="review-display-mode"]')?.content || 'daily',
   );
@@ -21,7 +24,7 @@
   const configuredDefaultPreset = document.querySelector('meta[name="review-default-preset"]')?.content || '';
   const configuredDefaultSort = document.querySelector('meta[name="review-default-sort"]')?.content || '';
   const options = {
-    defaultMinAI, today, displayMode: initialDisplayMode, isArxiv: isArxivScope,
+    defaultMinAI, today, defaultPageSize: Number(preferences.review_page_size || 25), displayMode: initialDisplayMode, isArxiv: isArxivScope,
     defaultPreset: configuredDefaultPreset, defaultSort: configuredDefaultSort,
   };
   const filterNames = ['preset', ...State.FILTER_FIELDS];
@@ -44,6 +47,8 @@
   let searchTimer = null;
   let toastTimer = null;
   let requestSequence = 0;
+  const savedMutations = new Set();
+  const bulkReadDays = new Set();
   let directLoadFrame = 0;
   const DIRECT_LOAD_MARGIN = 600;
   const DIRECT_LOAD_CONCURRENCY = 3;
@@ -141,6 +146,7 @@
   }
 
   function safeHref(value) {
+    if (!String(value || '').trim()) return '';
     try {
       const url = new URL(String(value || ''), location.origin);
       return ['http:', 'https:'].includes(url.protocol) ? url.href : '';
@@ -148,7 +154,7 @@
   }
 
   function formatDay(day) {
-    if (day === 'undated') return 'Undated';
+    if (day === 'undated') return 'Announcement date unknown';
     const date = new Date(`${day}T12:00:00Z`);
     if (Number.isNaN(date.getTime())) return day;
     const current = new Date(`${today}T12:00:00Z`);
@@ -177,8 +183,6 @@
     if (filters.decision !== 'all') labels.push(filters.decision === 'keep' ? 'AI kept' : 'AI dropped');
     if (filters.min_ai) labels.push(`AI ≥ ${filters.min_ai}`);
     if (filters.source) labels.push(sourceControl?.selectedOptions[0]?.textContent || `Source ${filters.source}`);
-    if (filters.from) labels.push(`From ${filters.from}`);
-    if (filters.to) labels.push(`To ${filters.to}`);
     return labels;
   }
 
@@ -229,60 +233,50 @@
     return `<section class="review-detail-section ${className}"><h4>${escapeHTML(title)}</h4><div class="review-markdown">${htmlValue}</div></section>`;
   }
 
-  function itemBadges(item) {
-    const badges = [];
-    if (item.content_kind === 'youtube-short') {
-      badges.push('<span class="review-kind-badge review-kind-youtube-short" title="Explicit YouTube Shorts URL">Shorts</span>');
-    }
-    const warnings = {
-      'future-source-date': ['Future source date', 'The feed supplied a future timestamp; this item is ordered by retrieval time.'],
-      'arxiv-announcement-unknown': ['Announcement date unknown', 'This arXiv paper was recovered from API metadata without a verified announcement date.'],
-      'arxiv-announcement-unverified': ['Date unverified', 'This legacy arXiv date came from API metadata and is not a verified announcement timestamp.'],
-    };
-    const warning = warnings[item.date_warning];
-    if (warning) {
-      badges.push(`<span class="review-kind-badge review-date-warning" title="${escapeHTML(warning[1])}">${escapeHTML(warning[0])}</span>`);
-    }
-    return badges.join('');
-  }
-
   function renderItemDetails(itemId) {
     const detail = state.itemDetails[itemId];
     if (!detail || detail.status === 'loading') return '<div class="review-detail-loading">Loading item details…</div>';
-    if (detail.status === 'error') return `<div class="review-error">${escapeHTML(detail.error)}</div>`;
+    if (detail.status === 'error') return `<div class="review-error">${escapeHTML(detail.error)} <button type="button" data-action="retry-item" data-item-id="${itemId}">Retry content</button></div>`;
     const data = detail.data || {};
     return [
       detailSection('AI item summary', data.summary_html),
       detailSection('AI relevance rationale', data.rationale_html),
-      detailSection('Local signals', data.local_rationale_html),
       detailSection(data.source_label || 'Source description', data.source_html, 'review-source-text'),
-    ].filter(Boolean).join('') || '<p class="muted">No additional details are stored for this item.</p>';
+      data.local_rationale_html ? `<details class="review-local-signals"><summary>Local matching details</summary><div class="review-markdown">${data.local_rationale_html}</div></details>` : '',
+    ].filter(Boolean).join('');
   }
 
   function renderItem(item) {
     const open = Boolean(state.openItems[item.id]);
-    const tags = (item.tags || []).map(tag => `<span class="review-tag">${escapeHTML(tag)}</span>`).join('');
+    const tags = (item.tags || []).slice(0, 12).map(tag => `<span class="review-tag">${escapeHTML(tag)}</span>`).join('');
     const readPending = Boolean(state.readMutations[item.id]);
     const resource = safeHref(item.url);
-    const titleLink = resource
+    const title = resource
       ? `<a class="review-item-title" href="${escapeHTML(resource)}" target="_blank" rel="noopener noreferrer" data-action="open-item-link" data-item-id="${item.id}">${escapeHTML(item.title)}</a>`
       : `<span class="review-item-title">${escapeHTML(item.title)}</span>`;
-    const title = `<div class="review-item-title-line">${titleLink}${itemBadges(item)}</div>`;
     const score = scoreLabel(item);
+    const ready = state.itemDetails[item.id]?.status === 'ready';
+    const toggleLabel = State.contentToggleLabel(open);
     return `<article class="review-item${item.is_read ? ' is-read' : ''}" data-item-id="${item.id}">
       <div class="review-item-main">
-        ${score ? `<span class="review-score review-score-${escapeHTML(item.ai_state)}">${escapeHTML(score)}</span>` : ''}
-        ${title}
-        <div class="review-item-actions">
-          <button type="button" data-action="star" data-item-id="${item.id}" aria-label="${item.is_starred ? 'Remove favorite' : 'Add favorite'}" class="review-icon-button${item.is_starred ? ' active' : ''}">★</button>
-          <button type="button" data-action="read-later" data-item-id="${item.id}" aria-label="${item.is_read_later ? 'Remove from Read later' : 'Add to Read later'}" class="review-icon-button${item.is_read_later ? ' active' : ''}">↗</button>
-          <button type="button" data-action="read" data-item-id="${item.id}" aria-label="${item.is_read ? 'Mark as unread' : 'Mark as read'}" class="review-icon-button review-read-button" ${readPending ? 'disabled aria-busy="true"' : ''}>${item.is_read ? '○' : '●'}</button>
+        <div class="review-card-toolbar">
+          <div class="review-title-line">
+            ${score ? `<span class="review-score review-score-${escapeHTML(item.ai_state)}">${escapeHTML(score)}</span>` : ''}
+            <button class="review-content-toggle" type="button" data-action="toggle-item" data-item-id="${item.id}" title="${escapeHTML(toggleLabel)}" aria-label="${escapeHTML(toggleLabel)}" aria-expanded="${open}" aria-controls="review-item-details-${item.id}"><span class="review-item-caret" aria-hidden="true"></span></button>
+            ${item.is_short ? '<span class="review-tag review-short">Shorts</span>' : ''}${title}
+          </div>
+          <div class="review-item-actions" role="group" aria-label="Item actions">
+            <button type="button" data-action="star" data-item-id="${item.id}" aria-label="${item.is_starred ? 'Remove favorite' : 'Add favorite'}" aria-pressed="${Boolean(item.is_starred)}" class="review-icon-button${item.is_starred ? ' active' : ''}" title="${item.is_starred ? 'Remove favorite' : 'Add favorite'}">★</button>
+            <button type="button" data-action="read-later" data-item-id="${item.id}" aria-label="${item.is_read_later ? 'Remove from Read later' : 'Add to Read later'}" aria-pressed="${Boolean(item.is_read_later)}" class="review-icon-button${item.is_read_later ? ' active' : ''}" title="${item.is_read_later ? 'Remove from Read later' : 'Add to Read later'}">↗</button>
+            <button type="button" data-action="read" data-item-id="${item.id}" aria-label="${item.is_read ? 'Mark as unread' : 'Mark as read'}" class="review-icon-button review-read-button" title="${item.is_read ? 'Mark as unread' : 'Mark as read'}" ${readPending ? 'disabled aria-busy="true"' : ''}>${item.is_read ? '○' : '●'}</button>
+            ${item.youtube_id && preferences.youtube_embed_enabled !== false ? `<button class="review-icon-button review-inline-tool" type="button" data-action="play-video" data-item-id="${item.id}" aria-label="Play YouTube video" title="Play YouTube video">▶</button>` : ''}
+            ${open && preferences.audio_reading_enabled !== false ? `<button type="button" class="review-icon-button review-inline-tool" data-action="speak-item" data-item-id="${item.id}" aria-label="Read item aloud" title="Read item aloud" ${ready ? '' : 'disabled'}>♫</button>` : ''}
+            ${open && preferences.article_theatre_enabled !== false && window.DistillFeedReaderCore?.articleURL(item.url) ? `<button type="button" class="review-icon-button review-inline-tool" data-action="article-theatre" data-item-id="${item.id}" aria-label="Open article theatre" title="Open article theatre">▣</button>` : ''}
+          </div>
+          <div class="review-item-meta"><span>${escapeHTML(item.feed_title)}</span>${item.author ? `<span>${escapeHTML(item.author)}</span>` : ''}${item.published_at ? `<time datetime="${escapeHTML(item.published_at)}">${escapeHTML(formatTimestamp(item.published_at))} UTC</time>` : ''}${item.future_date_warning ? '<span title="The source date was implausibly ahead of retrieval; the retrieval date is used for sorting.">Future source date</span>' : ''}</div>
         </div>
-        <div class="review-item-meta">
-          <span>${escapeHTML(item.feed_title)}</span>${item.author ? `<span>${escapeHTML(item.author)}</span>` : ''}${item.published_at ? `<time datetime="${escapeHTML(item.published_at)}">${escapeHTML(formatTimestamp(item.published_at))} UTC</time>` : ''}
-          ${item.local_score !== null && item.local_score !== undefined ? `<span>Local ${escapeHTML(item.local_score)}</span>` : ''}
-        </div>
-        <div class="review-item-secondary"><span class="review-tags">${tags}</span><button class="review-content-toggle" type="button" data-action="toggle-item" data-item-id="${item.id}" aria-expanded="${open}" aria-controls="review-item-details-${item.id}"><span>${escapeHTML(State.contentToggleLabel(open))}</span><span class="review-item-caret" aria-hidden="true">›</span></button></div>
+        ${preferences.review_show_rationale !== false && item.why && item.ai_state === 'scored' ? `<p class="review-rationale-preview" title="Full AI relevance rationale is available using the expand arrow">${escapeHTML(item.why)}</p>` : ''}
+        ${tags && preferences.review_show_tags !== false ? `<div class="review-tags">${tags}</div>` : ''}
       </div>
       <div id="review-item-details-${item.id}" class="review-item-details" ${open ? '' : 'hidden'}>${open ? renderItemDetails(item.id) : ''}</div>
     </article>`;
@@ -300,7 +294,7 @@
       container.innerHTML = '<div class="review-loading">Loading items…</div>';
       return;
     }
-    if (data.error) {
+    if (data.error && !data.items.length) {
       container.innerHTML = `<div class="review-error">${escapeHTML(data.error)} <button type="button" data-action="retry-day" data-day="${escapeHTML(day.day)}">Retry</button></div>`;
       return;
     }
@@ -310,6 +304,7 @@
     }
     let currentCohort = '';
     const fragments = [];
+    if (data.error) fragments.push(`<div class="review-error">${escapeHTML(data.error)} Previously loaded items are retained. Retry with Show next below.</div>`);
     data.items.forEach(item => {
       const label = cohortLabel(item);
       if (state.filters.sort === 'ai' && label !== currentCohort) {
@@ -373,7 +368,14 @@
       daysRoot.innerHTML = '<div class="review-empty review-empty-page"><strong>No items match these filters.</strong><span>Change a filter or select Everything.</span></div>';
       return;
     }
+    const disclosureStates = new Map([...daysRoot.querySelectorAll('details.review-day')].map(el => [el.dataset.day, Boolean(el.querySelector('.review-daily-brief')?.open)]));
+    const scrollPosition = daysRoot.scrollTop;
     daysRoot.innerHTML = '';
+    if (state.error) {
+      const warning = document.createElement('p'); warning.className = 'review-error';
+      warning.textContent = `${state.error}. The loaded days are retained; use Show older days to retry.`;
+      daysRoot.appendChild(warning);
+    }
     const immediateLoads = [];
     const renderGeneration = state.generation;
     state.days.forEach(day => {
@@ -385,12 +387,12 @@
       const brief = day.brief;
       details.innerHTML = `<summary class="review-day-summary">
         <span class="review-day-title"><strong>${escapeHTML(formatDay(day.day))}</strong><span>${escapeHTML(daySummaryText(day))}</span></span>
-        <span class="review-day-state">${day.complete ? 'Complete' : 'To review'}</span>
+        <span class="review-day-state">${day.day === 'undated' ? 'Optional archive' : day.complete ? 'Read' : ''}</span>
       </summary>
       <div class="review-day-body">
-        ${brief ? `<details class="review-daily-brief"><summary>Daily brief · ${Number(brief.selected_count || 0).toLocaleString()} selected</summary><div class="review-daily-brief-body review-markdown">${brief.html || ''}</div><footer>${escapeHTML(brief.model || '')}${brief.completed_at ? ` · ${escapeHTML(brief.completed_at)}` : ''}</footer></details>` : '<p class="review-no-brief">No daily brief is stored for this day.</p>'}
+        ${brief ? `<details class="review-daily-brief"><summary>Daily brief · ${Number(brief.selected_count || 0).toLocaleString()} selected</summary><div class="review-daily-brief-body review-markdown">${brief.html || ''}</div><div class="review-reading-actions">${preferences.audio_reading_enabled !== false ? `<button type="button" data-action="speak-brief" data-day="${escapeHTML(day.day)}">Read brief aloud</button>` : ''}</div><footer>${escapeHTML(brief.model || '')}${brief.completed_at ? ` · ${escapeHTML(brief.completed_at)}` : ''}</footer></details>` : '<p class="review-no-brief">No daily brief is stored for this day.</p>'}
         <div class="review-day-actions">
-          <button type="button" data-action="mark-visible-read" data-day="${escapeHTML(day.day)}">Mark loaded items read</button>
+          <button type="button" data-action="mark-visible-read" data-day="${escapeHTML(day.day)}" ${bulkReadDays.has(day.day) ? 'disabled aria-busy="true"' : ''}>Mark loaded items read</button>
           <button type="button" data-action="mark-day-read" data-day="${escapeHTML(day.day)}" data-total="${day.total}" data-unread="${day.unread}" data-hidden="${hiddenCount}" ${(state.finishingDays[day.day] || !day.unread) ? 'disabled' : ''}>${escapeHTML(State.dayReadActionLabel(day.day, today, day.unread, Boolean(state.finishingDays[day.day])))}</button>
         </div>
         <div class="review-day-items" data-day-items="${escapeHTML(day.day)}"></div>
@@ -405,6 +407,8 @@
         if (open && !state.dayData[day.day]) loadDay(day.day, false);
       });
       daysRoot.appendChild(details);
+      const briefElement = details.querySelector('.review-daily-brief');
+      if (briefElement && disclosureStates.get(day.day)) briefElement.open = true;
       const itemContainer = details.querySelector('[data-day-items]');
       if (details.open) {
         renderDayItems(day, itemContainer);
@@ -413,6 +417,12 @@
         }
       }
     });
+    if (state.hasMoreDays) {
+      const more = document.createElement('button'); more.type = 'button'; more.className = 'review-load-more';
+      more.dataset.action = 'older-days'; more.textContent = state.status === 'loading' ? 'Loading older days…' : 'Show older days';
+      more.disabled = state.status === 'loading'; daysRoot.appendChild(more);
+    }
+    daysRoot.scrollTop = scrollPosition;
     immediateLoads.forEach(day => queueMicrotask(() => {
       if (state.generation === renderGeneration && state.openDays[day]
           && !state.dayData[day]) loadDay(day, false);
@@ -424,14 +434,17 @@
     syncControls();
     if (resultStatus) {
       const counts = state.counts || {};
-      resultStatus.textContent = state.status === 'loading' && !state.days.length
+      const loading = state.status === 'loading' && !state.days.length;
+      const range = State.dateRangeLabel(state.filters);
+      resultStatus.textContent = loading
         ? 'Loading…'
-        : State.countSummary(counts, state.filters, options);
+        : State.countSummary(counts, state.filters, options) + (range ? ` – ${range}` : '');
     }
     renderDays();
   }
 
   function refreshFilters(values, preset = null) {
+    window.DistillFeedReader?.stopAll();
     clearTimeout(searchTimer); searchTimer = null;
     if (preset) transition({ type: 'APPLY_PRESET', preset, options });
     else transition({ type: 'SET_FILTERS', values, options });
@@ -447,11 +460,12 @@
   }
 
   function refreshFilter(field, value) {
+    window.DistillFeedReader?.stopAll();
     transition({ type: 'SET_FILTER', field, value, options });
     syncURL(); abortScopedRequests(); loadDays();
   }
 
-  async function loadDays() {
+  async function loadDays(append = false) {
     if (!scope.groupId && !scope.feedId) {
       state = { ...state, status: 'ready', days: [], counts: {} };
       renderReview(); return;
@@ -462,9 +476,10 @@
     const requestId = nextRequestId('days');
     transition({ type: 'REQUEST_DAYS', generation, requestId });
     const query = filtersParams(); scopeParams(query);
+    if (append && state.nextDayCursor) query.set('before', state.nextDayCursor);
     try {
       const payload = await requestJSON(`/api/review/days?${query}`, { signal: daysController.signal });
-      transition({ type: 'RECEIVE_DAYS', generation, requestId, payload });
+      transition({ type: 'RECEIVE_DAYS', generation, requestId, payload, append });
       persistOpenDays();
     } catch (error) {
       if (error.name === 'AbortError') return;
@@ -530,7 +545,7 @@
     try {
       await requestJSON(`/api/items/${itemId}/read`, { method: 'POST', body: JSON.stringify({ read }) });
       transition({ type: 'CONFIRM_READ', itemId, token });
-      authoritativeReload();
+      // Keep the card available for re-reading until the view/filter is changed.
     } catch (error) {
       transition({ type: 'ROLLBACK_READ', itemId, token });
       notify(error.message);
@@ -538,21 +553,30 @@
   }
 
   async function changeBoolean(itemId, endpoint, field, value, successMessage) {
+    const key = `${itemId}:${field}`;
+    if (savedMutations.has(key)) return;
+    savedMutations.add(key);
     try {
       await requestJSON(`/api/items/${itemId}/${endpoint}`, { method: 'POST', body: JSON.stringify({ [field]: value }) });
-      notify(successMessage); authoritativeReload();
+      transition({ type: 'SAVED_CONFIRMED', itemId, field: field === 'starred' ? 'is_starred' : 'is_read_later', value });
+      notify(successMessage);
     } catch (error) { notify(error.message); }
+    finally { savedMutations.delete(key); }
   }
 
   async function markVisibleRead(day) {
+    if (bulkReadDays.has(day)) return;
     const items = (state.dayData[day]?.items || []).filter(item => !item.is_read);
     if (!items.length) { notify('Every loaded item is already read'); return; }
+    bulkReadDays.add(day); renderReview();
     try {
       const result = await requestJSON('/api/items/bulk-read', {
         method: 'POST', body: JSON.stringify({ mode: 'selected', read: true, item_ids: items.map(item => item.id) }),
       });
-      notify(`${result.changed} loaded item${result.changed === 1 ? '' : 's'} marked read`); authoritativeReload();
+      transition({ type: 'LOADED_READ_SUCCESS', itemIds: items.map(item => item.id) });
+      notify(`${result.changed} loaded item${result.changed === 1 ? '' : 's'} marked read`);
     } catch (error) { notify(error.message); }
+    finally { bulkReadDays.delete(day); renderReview(); }
   }
 
   async function markDayRead(day, total, unread, hidden) {
@@ -571,7 +595,6 @@
       const result = await requestJSON(`/api/review/days/${encodeURIComponent(day)}/finish`, { method: 'POST', body: JSON.stringify(body) });
       transition({ type: 'FINISH_DAY_SUCCESS', day, payload: result });
       persistOpenDays(); notify(`${result.changed} item${result.changed === 1 ? '' : 's'} marked read`);
-      authoritativeReload();
     } catch (error) {
       transition({ type: 'FINISH_DAY_FAIL', day, error: error.message }); notify(error.message);
     }
@@ -591,9 +614,6 @@
       });
       const appliedMode = State.normalizeDisplayMode(result.review_display_mode || normalized);
       options.displayMode = appliedMode;
-      options.defaultPreset = isArxivScope
-        ? (appliedMode === 'direct' ? 'catch-up' : 'best-unread')
-        : 'everything';
       transition({ type: 'SET_DISPLAY_MODE', mode: appliedMode });
       persistOpenDays();
       notify(appliedMode === 'direct'
@@ -639,13 +659,23 @@
     const action = button.dataset.action;
     const day = button.dataset.day;
     const itemId = Number(button.dataset.itemId || 0);
-    if (action === 'retry-days') loadDays();
+    if (action === 'older-days') loadDays(true);
+    else if (action === 'retry-item') loadItem(itemId);
+    else if (action === 'retry-days') loadDays();
     else if (action === 'retry-day') loadDay(day, false);
     else if (action === 'load-more') loadDay(day, true);
     else if (action === 'toggle-item') {
       const open = !state.openItems[itemId];
       transition({ type: 'TOGGLE_ITEM', itemId, open });
       if (open) loadItem(itemId);
+    } else if (action === 'play-video' || action === 'article-theatre') {
+      const item = Object.values(state.dayData).flatMap(data => data.items).find(entry => Number(entry.id) === itemId);
+      if (item) window.DistillFeedReader?.open(item, action === 'play-video');
+    } else if (action === 'speak-item') {
+      const item = state.itemDetails[itemId]?.data || {};
+      window.DistillFeedReader?.speakHTML(`${escapeHTML(item.title || '')}. ${item.summary_html || ''} ${item.rationale_html || ''} ${item.source_html || ''}`);
+    } else if (action === 'speak-brief') {
+      window.DistillFeedReader?.speakHTML(state.days.find(entry => entry.day === day)?.brief?.html || '');
     } else if (action === 'read') changeRead(itemId);
     else if (action === 'star') {
       const item = Object.values(state.dayData).flatMap(data => data.items).find(candidate => Number(candidate.id) === itemId);
@@ -661,6 +691,59 @@
     }
   });
 
+  document.getElementById('review-speak-titles')?.addEventListener('click', () => {
+    const titles = state.days.filter(day => state.openDays[day.day]).flatMap(day => state.dayData[day.day]?.items || []).map(item => item.title);
+    window.DistillFeedReader?.speakText(titles.join('. '));
+  });
+  const interestsPanel = document.getElementById('review-interests');
+  const interestsText = document.getElementById('review-interests-text');
+  const interestsStatus = document.getElementById('review-interests-status');
+  let interestsLoaded = false;
+  let interestsLoading = false;
+  const interestsSave = document.getElementById('review-interests-save');
+  if (interestsText) interestsText.disabled = true;
+  if (interestsSave) interestsSave.disabled = true;
+  interestsPanel?.addEventListener('toggle', async () => {
+    if (!interestsPanel.open || interestsLoaded || interestsLoading) return;
+    interestsLoading = true; interestsStatus.textContent = 'Loading saved interests…';
+    const query = new URLSearchParams(); scopeParams(query);
+    try {
+      const data = await requestJSON(`/api/review/interests?${query}`);
+      interestsText.value = data.value || '';
+      interestsText.placeholder = data.effective || 'What matters to you in this selection?';
+      interestsStatus.textContent = data.inherited ? 'Inheriting the parent/global profile. Enter text to override it.' : 'A custom profile is saved for this selection.';
+      interestsLoaded = true;
+      interestsText.disabled = false; if (interestsSave) interestsSave.disabled = false;
+    } catch (error) { interestsStatus.textContent = `${error.message}. Close and reopen this section to retry.`; }
+    finally { interestsLoading = false; }
+  });
+  document.getElementById('review-interests-save')?.addEventListener('click', async event => {
+    const button = event.currentTarget; if (button.disabled) return; button.disabled = true;
+    const body = { value: interestsText.value }; if (scope.feedId) body.feed_id = scope.feedId; else body.group_id = scope.groupId;
+    try {
+      await requestJSON('/api/review/interests', { method: 'POST', body: JSON.stringify(body) });
+      interestsStatus.textContent = 'Saved. Applies to subsequent AI evaluations; existing scores are not reset. Empty text inherits the parent/global profile.';
+    } catch (error) { interestsStatus.textContent = error.message; }
+    finally { button.disabled = false; }
+  });
+  const fontControl = document.getElementById('reader-font-size');
+  const fontOutput = document.getElementById('reader-font-output');
+  const fontStatus = document.getElementById('reader-font-status');
+  const fontSaver = window.DistillFeedReaderCore?.createSerialSaver(async value => {
+    const values = { 'ui.item_font_size': value, 'ui.summary_font_size': value };
+    await requestJSON('/api/config', { method: 'POST', body: JSON.stringify({ values }) });
+    window.dispatchEvent(new CustomEvent('distillfeed:font-saved', { detail: values }));
+  }, result => {
+    if (!result.current) return;
+    if (fontStatus) fontStatus.textContent = result.status === 'saved' ? 'Text size saved.' : result.status === 'error' ? 'Text size is previewed but could not be saved.' : 'Saving text size…';
+    if (result.status === 'error') notify(`Text size is previewed but not saved: ${result.error.message}`);
+  });
+  fontControl?.addEventListener('input', () => {
+    const value = Math.max(10, Math.min(24, Number(fontControl.value) || 16));
+    for (const variable of ['--item-size', '--summary-size']) document.documentElement.style.setProperty(variable, `${value}px`);
+    if (fontOutput) fontOutput.value = value;
+  });
+  fontControl?.addEventListener('change', () => fontSaver?.save(Number(fontControl.value)));
   renderReview();
   loadDays();
 })();

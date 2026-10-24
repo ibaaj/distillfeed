@@ -105,16 +105,41 @@ def test_filter_toolbar_frontend_backend_contract_is_complete():
     assert ".review-content-toggle" in stylesheet
     assert ".review-source-links" not in stylesheet
     assert "Stored item summary" not in script
-    assert "item.content_kind === 'youtube-short'" in script
-    assert ">Shorts</span>" in script
-    assert "future-source-date" in script
-    assert "arxiv-announcement-unknown" in script
-    assert ".review-kind-youtube-short" in stylesheet
-    assert ".review-date-warning" in stylesheet
+    # RC5 retains the score/disclosure/title order; actions remain separately
+    # grouped. A compact triangle replaces visible text without losing an
+    # accessible name, tooltip, focusability or aria-expanded state.
+    start = script.index('  function renderItem(item) {')
+    end = script.index('  function renderDayItems(', start)
+    card = script[start:end]
+    assert card.index('<div class="review-title-line">') < card.index('<div class="review-item-actions"')
+    assert card.index('review-score-${escapeHTML') < card.index('class="review-content-toggle"')
+    assert card.index('class="review-content-toggle"') < card.index('${title}')
+    assert 'aria-label="${escapeHTML(toggleLabel)}"' in card
+    assert 'aria-expanded="${open}"' in card
+    assert 'aria-controls="review-item-details-${item.id}"' in card
+    assert '<span class="review-item-caret" aria-hidden="true"></span>' in card
+    assert 'State.contentToggleLabel(open)' in card
+    assert 'title="${escapeHTML(toggleLabel)}"' in card
+    assert 'role="group" aria-label="Item actions"' in card
+    assert 'grid-template-areas: "title actions" "meta meta"' in stylesheet
+    assert 'grid-template-areas: "title title" "meta actions"' in stylesheet
+    # RC5: visual Day view label hides the current selection but the real native
+    # options remain available; statistics have their own responsive grid row.
+    assert '<span aria-hidden="true">Day view</span>' in template
+    assert '<select id="review-display-mode" aria-label="Day view:' in template
+    assert 'AI for {{ scope_title }}</summary>' in template
+    assert 'aria-label="Audio reading for {{ scope_title }}"' in template
+    assert 'id="review-reader-utilities"' not in template  # Existing class/IDs unchanged.
+    assert 'grid-template-areas: "title controls" "status status"' in stylesheet
+    assert 'grid-area: status;' in stylesheet
+    assert '.review-layout-control select {' in stylesheet
+    assert 'opacity: 0;' in stylesheet
+    assert '.review-card-toolbar .review-title-line {' in stylesheet
+    assert 'align-items: center;' in stylesheet
     assert "block.items" not in template
-    assert "v='0.24.3-reliability1'" in template
-    assert "service-worker.js?v=0.24.3-reliability1" in (
+    assert "v='0.25.0-rc5'" in template
+    assert "service-worker.js?v=0.25.0-rc5" in (
         ROOT / "rss_reader" / "static" / "app.js"
     ).read_text("utf-8")
-    assert "distillfeed-v243-reliability1" in service_worker
-    assert "?v=0.24.3-reliability1" in service_worker
+    assert "distillfeed-v250-rc5" in service_worker
+    assert "?v=0.25.0-rc5" in service_worker

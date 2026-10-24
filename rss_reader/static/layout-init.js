@@ -3,6 +3,10 @@
 
   const root = document.documentElement;
   const viewportWidth = window.innerWidth;
+  [['item-font-size','--item-size',14], ['summary-font-size','--summary-size',16], ['subscription-font-size','--subscription-size',14]].forEach(([name, css, fallback]) => {
+    const value = Number(document.querySelector(`meta[name="${name}"]`)?.content || fallback);
+    root.style.setProperty(css, `${Math.max(10, Math.min(24, value))}px`);
+  });
 
   function restoreWidth(storageKey, propertyName, minimum, maximumRatio) {
     try {

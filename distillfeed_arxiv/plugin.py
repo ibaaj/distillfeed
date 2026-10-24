@@ -16,14 +16,14 @@ from rss_reader.db import transaction, utcnow
 from .config import load_plugin_config, settings_fields, update_settings
 from .fetch import fetch_api_window, fetch_rss, merge_papers
 from .llm import LLMUsage, daily_digest, rerank
+from .dates import ensure_date_schema, parse_stamp, day_of, canonical_day_sql
 from .models import Decision, LocalScore, Paper
 from .notifications import deliver_arxiv_pushes, send_arxiv_test
 from .scoring import compute_local_score, decide
 
 LOGGER = logging.getLogger(__name__)
 GROUP_TITLE = "arXiv Digest"
-PROMPT_VERSION = "distillfeed-arxiv-2"
-RUBRIC_VERSION = "arxiv-relevance-bands-1"
+PROMPT_VERSION = "distillfeed-arxiv-1"
 FEED_TITLES = {
     "cs.AI": "Artificial Intelligence (cs.AI)",
     "cs.LG": "Machine Learning (cs.LG)",
@@ -44,11 +44,6 @@ CREATE TABLE IF NOT EXISTS distillfeed_arxiv_papers (
     pdf_url TEXT,
     announce_type TEXT,
     source TEXT NOT NULL,
-    submitted_at TEXT,
-    updated_at TEXT,
-    announced_at TEXT,
-    announcement_day TEXT,
-    announcement_source TEXT,
     local_score INTEGER,
     llm_score INTEGER,
     final_score REAL,
@@ -57,13 +52,7 @@ CREATE TABLE IF NOT EXISTS distillfeed_arxiv_papers (
     tags_json TEXT NOT NULL DEFAULT '[]',
     local_reasons_json TEXT NOT NULL DEFAULT '[]',
     evaluation_status TEXT NOT NULL DEFAULT 'pending',
-    evaluated_at TEXT,
-    score_model TEXT,
-    score_prompt_version TEXT,
-    score_rubric_version TEXT,
-    score_input_fingerprint TEXT,
-    score_batch_id TEXT,
-    score_paper_version TEXT
+    evaluated_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_distillfeed_arxiv_pending
 ON distillfeed_arxiv_papers(evaluation_status, item_id);
@@ -218,217 +207,41 @@ def _paper_feed(paper: Paper, selected: list[str], feeds: dict[str, int]) -> int
     return feeds[category]
 
 
-def _iso(value: datetime | None) -> str | None:
-    return value.astimezone(UTC).isoformat(timespec="seconds") if value else None
-
-
-def _day_from_iso(value: str | None) -> str | None:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(UTC).date().isoformat()
-    except (TypeError, ValueError):
-        return None
-
-
-def _ensure_arxiv_schema_columns(connection: Any) -> None:
-    columns = {row["name"] for row in connection.execute(
-        "PRAGMA table_info(distillfeed_arxiv_papers)"
-    ).fetchall()}
-    additions = {
-        "submitted_at": "TEXT",
-        "updated_at": "TEXT",
-        "announced_at": "TEXT",
-        "announcement_day": "TEXT",
-        "announcement_source": "TEXT",
-        "score_model": "TEXT",
-        "score_prompt_version": "TEXT",
-        "score_rubric_version": "TEXT",
-        "score_input_fingerprint": "TEXT",
-        "score_batch_id": "TEXT",
-        "score_paper_version": "TEXT",
-    }
-    for name, declaration in additions.items():
-        if name not in columns:
-            connection.execute(
-                f"ALTER TABLE distillfeed_arxiv_papers ADD COLUMN {name} {declaration}"
-            )
-    connection.execute(
-        """CREATE INDEX IF NOT EXISTS idx_distillfeed_arxiv_announcement
-             ON distillfeed_arxiv_papers(announcement_day,evaluation_status,item_id)"""
-    )
-
-
-def _parse_iso(value: Any) -> datetime | None:
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except (TypeError, ValueError):
-        return None
-    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
-
-
-def _migrate_arxiv_dates_and_provenance(connection: Any) -> int:
-    """Separate announcement dates conservatively without discarding scores.
-
-    Legacy 0.24.2 rows did not distinguish the arXiv API submission timestamp
-    from the RSS announcement timestamp.  RSS-only rows are authoritative.
-    Existing weekday API/mixed dates are retained as explicitly labelled legacy
-    groupings to avoid rewriting years of history, while impossible weekend
-    announcement dates are moved to the undated review bucket until RSS evidence
-    supplies the real announcement date.
-    """
-    rows = connection.execute(
-        """SELECT ap.item_id,ap.source,ap.version,ap.submitted_at,ap.updated_at,
-                         ap.announced_at,ap.announcement_day,ap.announcement_source,
-                         ap.llm_score,i.published_at,i.source_published_at,
-                         i.discovered_at,i.date_warning
-                    FROM distillfeed_arxiv_papers ap
-                    JOIN items i ON i.id=ap.item_id"""
-    ).fetchall()
-    suspicious = 0
-    for row in rows:
-        source = str(row["source"] or "")
-        source_parts = {part for part in source.split("+") if part}
-        source_stamp = str(row["source_published_at"] or row["published_at"] or "") or None
-        source_time = _parse_iso(source_stamp)
-        submitted = str(row["submitted_at"] or "") or None
-        updated = str(row["updated_at"] or "") or None
-        announced = str(row["announced_at"] or "") or None
-        announcement_day = str(row["announcement_day"] or "") or None
-        announcement_source = str(row["announcement_source"] or "") or None
-
-        if "api" in source_parts and submitted is None:
-            submitted = source_stamp
-        if updated is None and "api" in source_parts:
-            updated = source_stamp
-
-        if announcement_source is not None:
-            # Rows already written or migrated by 0.24.3 have explicit date
-            # provenance. Never reinterpret an API-only ``unknown`` row as a
-            # weekday announcement on a later startup.
-            if announced is not None:
-                announcement_day = announcement_day or _day_from_iso(announced)
-            if announcement_source == "rss" and announced is None and source_stamp:
-                announced = source_stamp
-                announcement_day = _day_from_iso(source_stamp)
-        elif announced is not None:
-            announcement_day = announcement_day or _day_from_iso(announced)
-            announcement_source = "rss" if "rss" in source_parts else "legacy"
-        elif source_parts == {"rss"} and source_stamp:
-            announced = source_stamp
-            announcement_day = _day_from_iso(source_stamp)
-            announcement_source = "rss"
-        elif source_time is not None and source_time.weekday() >= 5:
-            # Saturday/Sunday API timestamps are submission evidence, not an
-            # arXiv announcement day. Do not invent a replacement weekday.
-            announcement_day = None
-            announcement_source = "unknown"
-            suspicious += 1
-        elif "rss" in source_parts and source_stamp:
-            # A pre-0.24.3 mixed row has lost which source supplied its date.
-            # Preserve non-weekend history, but label the inference explicitly.
-            announced = source_stamp
-            announcement_day = _day_from_iso(source_stamp)
-            announcement_source = "legacy"
-        elif source_parts == {"api"} and source_stamp:
-            # Preserve existing weekday sections without claiming that the API
-            # submission date is a verified announcement timestamp.
-            announcement_day = _day_from_iso(source_stamp)
-            announcement_source = "legacy-api-date"
-        else:
-            announcement_source = "unknown"
-
-        connection.execute(
-            """UPDATE distillfeed_arxiv_papers
-                      SET submitted_at=?,updated_at=?,announced_at=?,announcement_day=?,
-                          announcement_source=?,
-                          score_model=CASE WHEN llm_score IS NOT NULL
-                              THEN COALESCE(score_model,'legacy-unknown') ELSE score_model END,
-                          score_prompt_version=CASE WHEN llm_score IS NOT NULL
-                              THEN COALESCE(score_prompt_version,'legacy') ELSE score_prompt_version END,
-                          score_rubric_version=CASE WHEN llm_score IS NOT NULL
-                              THEN COALESCE(score_rubric_version,'legacy-unanchored') ELSE score_rubric_version END,
-                          score_paper_version=CASE WHEN llm_score IS NOT NULL
-                              THEN COALESCE(score_paper_version,version) ELSE score_paper_version END
-                    WHERE item_id=?""",
-            (submitted, updated, announced, announcement_day, announcement_source, int(row["item_id"])),
-        )
-        warning = str(row["date_warning"] or "")
-        if announcement_source == "rss":
-            if warning.startswith("arxiv-announcement-"):
-                connection.execute("UPDATE items SET date_warning=NULL WHERE id=?", (int(row["item_id"]),))
-        elif not warning or warning.startswith("arxiv-announcement-"):
-            replacement_warning = (
-                "arxiv-announcement-unknown"
-                if announcement_day is None
-                else "arxiv-announcement-unverified"
-            )
-            connection.execute(
-                "UPDATE items SET date_warning=? WHERE id=?",
-                (replacement_warning, int(row["item_id"])),
-            )
-    return suspicious
-
 def _store_paper(connection: Any, paper: Paper, feed_id: int) -> tuple[int, bool, bool]:
     existing = connection.execute(
-        """SELECT item_id,version,source,pdf_url,announce_type,submitted_at,updated_at,announced_at,
-                  announcement_day,announcement_source
-             FROM distillfeed_arxiv_papers WHERE arxiv_id=?""",
-        (paper.arxiv_id,),
+        "SELECT item_id,version FROM distillfeed_arxiv_papers WHERE arxiv_id=?", (paper.arxiv_id,)
     ).fetchone()
-    incoming_submitted = _iso(paper.submitted_at)
-    if incoming_submitted is None and paper.source == "api":
-        incoming_submitted = _iso(paper.published)
-    incoming_updated = _iso(paper.updated)
-    incoming_announced = _iso(paper.announced_at)
-    if incoming_announced is None and paper.source == "rss":
-        incoming_announced = _iso(paper.published)
-    incoming_announcement_source = (
-        paper.announcement_source or ("rss" if incoming_announced else None)
-    )
-
+    announced = paper.announced_at or (paper.published if paper.source == "rss" else None)
+    submitted = paper.submitted_at or (paper.published if paper.source in {"api", "api+rss"} else None)
+    published = (announced or paper.published or paper.updated or datetime.now(UTC)).isoformat(timespec="seconds")
+    def store_dates(item_id: int, revised: bool = False) -> None:
+        stamp = announced.isoformat() if announced else None
+        connection.execute("""UPDATE distillfeed_arxiv_papers SET
+            submitted_at=COALESCE(?,submitted_at),updated_at=COALESCE(?,updated_at),
+            announced_at=CASE WHEN ? THEN ? ELSE COALESCE(?,announced_at) END,
+            announcement_day=CASE WHEN ? THEN ? ELSE COALESCE(?,announcement_day) END,
+            announcement_source=CASE WHEN ? IS NOT NULL THEN 'rss'
+                WHEN ? THEN 'unknown' ELSE COALESCE(announcement_source,'unknown') END
+            WHERE item_id=?""",
+            (submitted.isoformat() if submitted else None, paper.updated.isoformat() if paper.updated else None,
+             revised,stamp,stamp,revised,day_of(announced) if announced else None,
+             day_of(announced) if announced else None,stamp,revised,item_id))
+        # Keep generic publication storage consistent when authoritative RSS evidence exists.
+        connection.execute("""UPDATE items SET published_at=COALESCE(
+            (SELECT announced_at FROM distillfeed_arxiv_papers WHERE item_id=?),published_at) WHERE id=?""",(item_id,item_id))
     if existing:
         item_id = int(existing["item_id"])
         revised = bool(paper.version and existing["version"] and paper.version != existing["version"])
-        stored_version = paper.version or existing["version"]
-        stored_pdf_url = paper.pdf_link or existing["pdf_url"]
-        stored_announce_type = paper.announce_type or existing["announce_type"]
-        submitted = incoming_submitted or existing["submitted_at"]
-        updated = incoming_updated or existing["updated_at"]
-        announced = incoming_announced or existing["announced_at"]
-        announcement_day = _day_from_iso(announced) or existing["announcement_day"]
-        announcement_source = (
-            incoming_announcement_source or existing["announcement_source"]
-            or ("unknown" if announced is None else "legacy")
-        )
-        source_parts = {
-            part
-            for value in (str(existing["source"] or ""), paper.source)
-            for part in value.split("+") if part
-        }
-        source = "api+rss" if {"api", "rss"} <= source_parts else paper.source
-        date_warning = None if announced else "arxiv-announcement-unknown"
-        display_stamp = announced or submitted or updated
         connection.execute(
-            """UPDATE items SET feed_id=?,title=?,url=?,author=?,published_at=?,
-                      source_published_at=?,date_warning=?,description_text=?
+            """UPDATE items SET title=?,url=?,author=?,published_at=?,description_text=?
                WHERE id=?""",
-            (
-                feed_id, paper.title, paper.link, ", ".join(paper.authors), display_stamp,
-                announced or submitted or updated, date_warning, paper.abstract, item_id,
-            ),
+            (paper.title, paper.link, ", ".join(paper.authors), published, paper.abstract, item_id),
         )
         connection.execute(
             """UPDATE distillfeed_arxiv_papers SET version=?,categories_json=?,primary_category=?,
-                      pdf_url=?,announce_type=?,source=?,submitted_at=?,updated_at=?,announced_at=?,
-                      announcement_day=?,announcement_source=? WHERE item_id=?""",
-            (
-                stored_version, json.dumps(paper.categories, ensure_ascii=False), paper.primary_category,
-                stored_pdf_url, stored_announce_type, source, submitted, updated, announced,
-                announcement_day, announcement_source, item_id,
-            ),
+               pdf_url=?,announce_type=?,source=? WHERE item_id=?""",
+            (paper.version, json.dumps(paper.categories, ensure_ascii=False), paper.primary_category,
+             paper.pdf_link, paper.announce_type, paper.source, item_id),
         )
         if revised:
             # A revised paper is new evidence. Never display or reuse its previous
@@ -436,72 +249,54 @@ def _store_paper(connection: Any, paper: Paper, feed_id: int) -> tuple[int, bool
             connection.execute(
                 """UPDATE distillfeed_arxiv_papers
                       SET local_score=NULL,llm_score=NULL,final_score=NULL,decision=NULL,why=NULL,
-                          tags_json='[]',local_reasons_json='[]',evaluation_status='pending',evaluated_at=NULL,
-                          score_model=NULL,score_prompt_version=NULL,score_rubric_version=NULL,
-                          score_input_fingerprint=NULL,score_batch_id=NULL,score_paper_version=NULL
+                          tags_json='[]',local_reasons_json='[]',evaluation_status='pending',evaluated_at=NULL
                     WHERE item_id=?""",
                 (item_id,),
             )
+        store_dates(item_id, revised)
         return item_id, False, revised
-
-    submitted = incoming_submitted
-    updated = incoming_updated
-    announced = incoming_announced
-    announcement_day = _day_from_iso(announced)
-    announcement_source = incoming_announcement_source or ("unknown" if announced is None else "rss")
-    discovered = utcnow()
-    date_warning = None if announced else "arxiv-announcement-unknown"
-    display_stamp = announced or submitted or updated
     item_id = int(connection.execute(
-        """INSERT INTO items(feed_id,stable_id,title,url,author,published_at,source_published_at,
-               discovered_at,date_warning,description_text,summary_eligible)
-           VALUES(?,?,?,?,?,?,?,?,?,?,0)""",
-        (
-            feed_id, paper.arxiv_id, paper.title, paper.link, ", ".join(paper.authors),
-            display_stamp, announced or submitted or updated, discovered, date_warning, paper.abstract,
-        ),
+        """INSERT INTO items(feed_id,stable_id,title,url,author,published_at,discovered_at,
+               description_text,summary_eligible) VALUES(?,?,?,?,?,?,?,?,0)""",
+        (feed_id, paper.arxiv_id, paper.title, paper.link, ", ".join(paper.authors),
+         published, utcnow(), paper.abstract),
     ).lastrowid)
     connection.execute(
         """INSERT INTO distillfeed_arxiv_papers(item_id,arxiv_id,version,categories_json,
-               primary_category,pdf_url,announce_type,source,submitted_at,updated_at,
-               announced_at,announcement_day,announcement_source)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (
-            item_id, paper.arxiv_id, paper.version, json.dumps(paper.categories, ensure_ascii=False),
-            paper.primary_category, paper.pdf_link, paper.announce_type, paper.source,
-            submitted, updated, announced, announcement_day, announcement_source,
-        ),
+               primary_category,pdf_url,announce_type,source) VALUES(?,?,?,?,?,?,?,?)""",
+        (item_id, paper.arxiv_id, paper.version, json.dumps(paper.categories, ensure_ascii=False),
+         paper.primary_category, paper.pdf_link, paper.announce_type, paper.source),
     )
+    store_dates(item_id)
     return item_id, True, True
 
 
 def _paper_from_row(row: Any) -> Paper:
-    def parsed(value: Any) -> datetime | None:
-        if not value:
-            return None
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(UTC)
-
-    submitted = parsed(row["submitted_at"])
-    announced = parsed(row["announced_at"])
-    updated = parsed(row["updated_at"])
+    values = dict(row)
+    announced = parse_stamp(values.get("announced_at") or values.get("announcement_day"))
+    source = str(values.get("source") or "")
+    provenance = str(values.get("announcement_source") or "")
+    if not provenance and not announced and source == "rss":
+        announced = parse_stamp(values.get("published_at"))
     return Paper(
-        arxiv_id=row["arxiv_id"], version=row["version"], title=row["title"],
-        abstract=row["description_text"],
-        authors=[value.strip() for value in str(row["author"] or "").split(",") if value.strip()],
-        categories=json.loads(row["categories_json"]), primary_category=row["primary_category"],
-        link=row["url"], pdf_link=row["pdf_url"], published=announced or submitted,
-        updated=updated or announced or submitted, source=row["source"],
-        announce_type=row["announce_type"], submitted_at=submitted, announced_at=announced,
-        announcement_source=row["announcement_source"],
+        arxiv_id=values["arxiv_id"], version=values["version"], title=values["title"],
+        abstract=values["description_text"],
+        authors=[v.strip() for v in str(values.get("author") or "").split(",") if v.strip()],
+        categories=json.loads(values["categories_json"]), primary_category=values["primary_category"],
+        link=values["url"], pdf_link=values["pdf_url"],
+        published=parse_stamp(values.get("published_at")), updated=parse_stamp(values.get("updated_at")),
+        source=source, announce_type=values.get("announce_type"),
+        submitted_at=parse_stamp(values.get("submitted_at")), announced_at=announced,
+        announcement_source=provenance,
     )
 
 
 def _paper_day(paper: Paper) -> str:
-    stamp = paper.announced_at
-    if stamp is None and paper.source == "rss":
-        # Compatibility for callers constructing an RSS Paper directly.
-        stamp = paper.published
-    return stamp.astimezone(UTC).date().isoformat() if stamp else "undated"
+    if paper.announced_at:
+        return day_of(paper.announced_at)
+    if paper.announcement_source or paper.source in {"api", "api+rss"}:
+        return "undated"
+    return day_of(paper.published or paper.updated)
 
 
 def _pending(connection: Any, feed_ids: list[int]) -> list[tuple[int, Paper]]:
@@ -510,10 +305,9 @@ def _pending(connection: Any, feed_ids: list[int]) -> list[tuple[int, Paper]]:
         f"""SELECT ap.*,i.feed_id,i.title,i.url,i.author,i.published_at,i.description_text
             FROM distillfeed_arxiv_papers ap JOIN items i ON i.id=ap.item_id
             WHERE ap.evaluation_status='pending' AND i.feed_id IN ({marks})
-            ORDER BY ap.announcement_day IS NULL,ap.announcement_day,i.id""", feed_ids,
+            ORDER BY COALESCE(i.published_at,i.discovered_at),i.id""", feed_ids,
     ).fetchall()
     return [(int(row["item_id"]), _paper_from_row(row)) for row in rows]
-
 
 
 def _stored_evaluations_by_day(
@@ -535,9 +329,8 @@ def _stored_evaluations_by_day(
              WHERE i.feed_id IN ({marks})
                AND ap.evaluation_status='complete'
                AND ap.llm_score IS NOT NULL
-               AND ap.local_score>=?
              ORDER BY ap.llm_score DESC,ap.local_score DESC,i.id""",
-        [*feed_ids, broad_threshold],
+        feed_ids,
     ).fetchall()
     grouped: dict[str, list[tuple[int, Paper, LocalScore, Decision]]] = {}
     for row in rows:
@@ -545,11 +338,11 @@ def _stored_evaluations_by_day(
         reasons = json.loads(row["local_reasons_json"] or "[]")
         tags = json.loads(row["tags_json"] or "[]")
         local = LocalScore(
-            score=int(row["local_score"]),
+            score=int(row["local_score"] or 0),
             reasons=[str(value) for value in reasons],
         )
         decision = Decision(
-            local_score=int(row["local_score"]),
+            local_score=int(row["local_score"] or 0),
             llm_score=int(row["llm_score"]),
             final_score=float(
                 row["final_score"]
@@ -595,50 +388,28 @@ def _group_scored_by_day(
 
 
 def _dedicated_digest_days(connection: Any, group_id: int, feed_ids: list[int]) -> set[str]:
-    """Return canonical days represented by successful single-day arXiv summaries.
-
-    Summary membership is interpreted through _paper_from_row() and _paper_day()
-    exactly like pending work and evidence fingerprints. A legacy storage date
-    can therefore never make a multi-day summary look like one daily digest.
-    """
+    """Successful single-canonical-day summaries, using the same key as the reader."""
     if not feed_ids:
         return set()
-    marks = ",".join("?" for _ in feed_ids)
-    rows = connection.execute(
-        f"""SELECT s.id AS summary_id,ap.*,i.*
-               FROM summaries s
-               JOIN llm_runs lr ON lr.id=s.llm_run_id
-               JOIN summary_items si ON si.summary_id=s.id
-               JOIN items i ON i.id=si.item_id
-               JOIN distillfeed_arxiv_papers ap ON ap.item_id=i.id
-              WHERE lr.status='success'
-                AND lr.prompt_version LIKE 'distillfeed-arxiv-%'
-                AND CASE WHEN s.scope_id IS NOT NULL THEN s.scope_kind
-                         WHEN s.scope_feed_id IS NOT NULL THEN 'feed' ELSE 'group' END='group'
-                AND COALESCE(s.scope_id,s.group_id)=?
-                AND i.feed_id IN ({marks})
-              ORDER BY s.id,si.rank,i.id""",
-        [group_id, *feed_ids],
-    ).fetchall()
-    days_by_summary: dict[int, set[str]] = {}
-    for row in rows:
-        days_by_summary.setdefault(int(row["summary_id"]), set()).add(
-            _paper_day(_paper_from_row(row))
-        )
-    return {
-        next(iter(days))
-        for days in days_by_summary.values()
-        if len(days) == 1
-    }
+    from .dates import canonical_day_sql
+    day = canonical_day_sql(connection)
+    marks = ','.join('?' for _ in feed_ids)
+    rows = connection.execute(f"""SELECT MIN({day}) first_day, MAX({day}) last_day
+        FROM summaries s JOIN llm_runs lr ON lr.id=s.llm_run_id
+        JOIN summary_items si ON si.summary_id=s.id JOIN items i ON i.id=si.item_id
+        JOIN distillfeed_arxiv_papers ap ON ap.item_id=i.id
+        WHERE lr.status='success' AND lr.prompt_version LIKE 'distillfeed-arxiv-%'
+        AND CASE WHEN s.scope_id IS NOT NULL THEN s.scope_kind
+            WHEN s.scope_feed_id IS NOT NULL THEN 'feed' ELSE 'group' END='group'
+        AND COALESCE(s.scope_id,s.group_id)=? AND i.feed_id IN ({marks})
+        GROUP BY s.id HAVING first_day=last_day""", [group_id,*feed_ids]).fetchall()
+    return {str(row['first_day']) for row in rows if row['first_day']!='undated'}
 
 
-def _missing_daily_digest_days(
-    connection: Any, group_id: int, feed_ids: list[int], broad_threshold: int,
-) -> list[str]:
-    """Find canonical AI-scored days without a successful daily digest."""
+def _missing_daily_digest_days(connection: Any, group_id: int, feed_ids: list[int], broad_threshold: int) -> list[str]:
     dedicated = _dedicated_digest_days(connection, group_id, feed_ids)
     stored = _stored_evaluations_by_day(connection, feed_ids, broad_threshold)
-    return sorted(day for day in stored if day not in dedicated)
+    return sorted(set(stored).difference(dedicated) - {"undated"})
 
 
 def _evidence_fingerprint(
@@ -670,62 +441,12 @@ def _evidence_fingerprint(
             )
         },
         "prompt_version": PROMPT_VERSION,
-        "rubric_version": RUBRIC_VERSION,
     }
     return hashlib.sha256(
         json.dumps(
             material, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()
-
-
-def _score_input_fingerprint(
-    paper: Paper, local: LocalScore, cfg: dict[str, Any],
-) -> str:
-    """Fingerprint the evidence actually used for one paper's AI score."""
-    filters = cfg["filters"]
-    material = {
-        "arxiv_id": paper.arxiv_id,
-        "version": paper.version or "",
-        "title": paper.title,
-        "abstract": paper.abstract,
-        "authors": list(paper.authors),
-        "categories": list(paper.categories),
-        "local_reasons": list(local.reasons),
-        "topic_lexicon": {
-            "strong": filters.get("positive_keywords_strong", []),
-            "medium": filters.get("positive_keywords_medium", []),
-            "negative": filters.get("negative_keywords", []),
-        },
-        "model": str(cfg["llm"].get("model", "")),
-        "system_prompt": str(cfg["llm"].get("system_prompt", "")),
-        "prompt_version": PROMPT_VERSION,
-        "rubric_version": RUBRIC_VERSION,
-    }
-    return hashlib.sha256(
-        json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-
-
-def _score_provenance(
-    day_scored: list[tuple[int, Paper, LocalScore]],
-    *,
-    run_id: int,
-    batch_size: int,
-    cfg: dict[str, Any],
-) -> dict[int, dict[str, str | None]]:
-    provenance: dict[int, dict[str, str | None]] = {}
-    for index, (item_id, paper, local) in enumerate(day_scored):
-        batch_number = index // batch_size + 1
-        provenance[item_id] = {
-            "model": str(cfg["llm"].get("model", "")),
-            "prompt_version": PROMPT_VERSION,
-            "rubric_version": RUBRIC_VERSION,
-            "input_fingerprint": _score_input_fingerprint(paper, local, cfg),
-            "batch_id": f"{run_id}:{batch_number}",
-            "paper_version": paper.version or None,
-        }
-    return provenance
 
 
 def _requeue_ai_eligible_without_score(connection: Any, cfg: dict[str, Any]) -> int:
@@ -740,9 +461,7 @@ def _requeue_ai_eligible_without_score(connection: Any, cfg: dict[str, Any]) -> 
     cursor = connection.execute(
         """UPDATE distillfeed_arxiv_papers
               SET llm_score=NULL,final_score=NULL,decision=NULL,why=NULL,tags_json='[]',
-                  evaluation_status='pending',evaluated_at=NULL,score_model=NULL,
-                  score_prompt_version=NULL,score_rubric_version=NULL,
-                  score_input_fingerprint=NULL,score_batch_id=NULL,score_paper_version=NULL
+                  evaluation_status='pending',evaluated_at=NULL
             WHERE llm_score IS NULL
               AND local_score IS NOT NULL
               AND local_score>=?
@@ -790,15 +509,9 @@ def _start_run(
 
 
 def _complete_run(
-    connection: Any,
-    run_id: int,
-    group_id: int,
-    evaluated: list[tuple[int, Paper, LocalScore, Decision]],
-    digest: dict[str, Any],
-    usage: LLMUsage,
-    provenance: dict[int, dict[str, str | None]] | None = None,
+    connection: Any, run_id: int, group_id: int,
+    evaluated: list[tuple[int, Paper, LocalScore, Decision]], digest: dict[str, Any], usage: LLMUsage,
 ) -> None:
-    provenance = provenance or {}
     summary_id = int(connection.execute(
         """INSERT INTO summaries(
                llm_run_id,group_id,scope_kind,scope_id,policy_hash,overview,changes,sections_json,created_at
@@ -825,31 +538,13 @@ def _complete_run(
             (summary_id, item_id, int(decision.decision == "keep"), rank, importance,
              paper.abstract[:1000], decision.why, decision.tags[0] if decision.tags else "arXiv"),
         )
-        metadata = provenance.get(item_id)
-        scored_at = utcnow() if metadata is not None else None
         connection.execute(
             """UPDATE distillfeed_arxiv_papers SET local_score=?,llm_score=?,final_score=?,decision=?,
-               why=?,tags_json=?,local_reasons_json=?,evaluation_status='complete',
-               evaluated_at=COALESCE(?,evaluated_at),
-               score_model=COALESCE(?,score_model),
-               score_prompt_version=COALESCE(?,score_prompt_version),
-               score_rubric_version=COALESCE(?,score_rubric_version),
-               score_input_fingerprint=COALESCE(?,score_input_fingerprint),
-               score_batch_id=COALESCE(?,score_batch_id),
-               score_paper_version=COALESCE(?,score_paper_version)
+               why=?,tags_json=?,local_reasons_json=?,evaluation_status='complete',evaluated_at=?
                WHERE item_id=?""",
-            (
-                decision.local_score, decision.llm_score, decision.final_score, decision.decision,
-                decision.why, json.dumps(decision.tags, ensure_ascii=False),
-                json.dumps(local.reasons, ensure_ascii=False), scored_at,
-                metadata.get("model") if metadata else None,
-                metadata.get("prompt_version") if metadata else None,
-                metadata.get("rubric_version") if metadata else None,
-                metadata.get("input_fingerprint") if metadata else None,
-                metadata.get("batch_id") if metadata else None,
-                metadata.get("paper_version") if metadata else None,
-                item_id,
-            ),
+            (decision.local_score, decision.llm_score, decision.final_score, decision.decision,
+             decision.why, json.dumps(decision.tags, ensure_ascii=False),
+             json.dumps(local.reasons, ensure_ascii=False), utcnow(), item_id),
         )
     connection.execute(
         """UPDATE llm_runs SET completed_at=?,status='success',input_tokens=?,cached_input_tokens=?,
@@ -889,13 +584,7 @@ class ArxivDigestPlugin:
     def initialize(self, connection: Any, main_config: Any) -> None:
         cfg = load_plugin_config(main_config)
         connection.executescript(SCHEMA)
-        _ensure_arxiv_schema_columns(connection)
-        suspicious_dates = _migrate_arxiv_dates_and_provenance(connection)
-        if suspicious_dates:
-            LOGGER.warning(
-                "Moved %d legacy weekend arXiv date(s) to the unverified-date bucket",
-                suspicious_dates,
-            )
+        ensure_date_schema(connection)
         restored = _requeue_ai_eligible_without_score(connection, cfg)
         if restored:
             LOGGER.info(
@@ -975,10 +664,7 @@ class ArxivDigestPlugin:
                         """UPDATE distillfeed_arxiv_papers SET local_score=?,local_reasons_json=?,
                            llm_score=NULL,final_score=NULL,decision='drop',
                            why='Screened out below the local AI threshold',tags_json='[]',
-                           evaluation_status='screened_out',evaluated_at=?,score_model=NULL,
-                           score_prompt_version=NULL,score_rubric_version=NULL,
-                           score_input_fingerprint=NULL,score_batch_id=NULL,score_paper_version=NULL
-                           WHERE item_id=?""",
+                           evaluation_status='screened_out',evaluated_at=? WHERE item_id=?""",
                         (local.score, json.dumps(local.reasons, ensure_ascii=False), utcnow(), item_id),
                     )
 
@@ -987,15 +673,9 @@ class ArxivDigestPlugin:
         stats["new_items"] = len(created_item_ids.intersection(retained_ids))
 
         pending_by_day = _group_scored_by_day(shortlisted)
-        stored_by_day = _stored_evaluations_by_day(
-            context.connection, feed_ids, broad,
-        )
-        dedicated_digest_days = _dedicated_digest_days(
-            context.connection, group_id, feed_ids,
-        )
-        missing_digest_days = sorted(
-            day for day in stored_by_day if day not in dedicated_digest_days
-        )
+        stored_by_day = _stored_evaluations_by_day(context.connection, feed_ids, broad)
+        dedicated_days = _dedicated_digest_days(context.connection, group_id, feed_ids)
+        missing_digest_days = sorted(set(stored_by_day).difference(dedicated_days) - {"undated"})
         work_days = sorted(set(pending_by_day).union(missing_digest_days))
         stats["backlog_days"] = len(work_days)
         stats["announcements"] = work_days
@@ -1062,18 +742,12 @@ class ArxivDigestPlugin:
                 break
 
             day_scored = pending_by_day.get(day, [])
-            existing = list(stored_by_day.get(day, ()))
+            existing = stored_by_day.get(day, [])
             evidence_map: dict[int, tuple[int, Paper]] = {
                 item_id: (item_id, paper) for item_id, paper, _local, _decision in existing
             }
             evidence_map.update({item_id: (item_id, paper) for item_id, paper, _local in day_scored})
             evidence = list(evidence_map.values())
-            evidence_days = {_paper_day(paper) for _, paper in evidence}
-            if evidence_days != {day}:
-                raise RuntimeError(
-                    f"Internal arXiv day partition mismatch for {day}: "
-                    + ", ".join(sorted(evidence_days))
-                )
             if not evidence:
                 # Defensive: a day can disappear only if rows were concurrently
                 # removed. The job lock should make this unreachable, but do not
@@ -1135,14 +809,24 @@ class ArxivDigestPlugin:
                 )
                 if getattr(context, "cancel_requested", lambda: False)():
                     raise InterruptedError("arXiv update stopped after daily digest composition")
-                score_provenance = _score_provenance(
-                    day_scored, run_id=run_id, batch_size=batch_size, cfg=cfg,
-                )
                 with transaction(context.connection, immediate=True):
                     _complete_run(
                         context.connection, run_id, group_id, day_evaluated, digest,
-                        rerank_usage.plus(digest_usage), score_provenance,
+                        rerank_usage.plus(digest_usage),
                     )
+                    for scored_id, scored_paper, _local, _decision in newly_evaluated:
+                        context.connection.execute("""UPDATE distillfeed_arxiv_papers SET llm_model=?,
+                            llm_rubric_version='absolute-relevance-v1',llm_scored_at=?,
+                            llm_input_fingerprint=?,llm_batch_id=? WHERE item_id=?""",
+                            (str(cfg['llm'].get('model','')),utcnow(),evidence_fingerprint,str(run_id),scored_id))
+                    summary_row = context.connection.execute(
+                        "SELECT id FROM summaries WHERE llm_run_id=? ORDER BY id DESC LIMIT 1", (run_id,)
+                    ).fetchone()
+                    if summary_row and day != "undated":
+                        context.connection.execute("""INSERT INTO distillfeed_arxiv_daily_briefs(day,summary_id,fingerprint,completed_at)
+                            VALUES(?,?,?,?) ON CONFLICT(day) DO UPDATE SET summary_id=excluded.summary_id,
+                            fingerprint=excluded.fingerprint,completed_at=excluded.completed_at""",
+                            (day,int(summary_row[0]),evidence_fingerprint,utcnow()))
                     _set_state(context.connection, "last_digest_announcement", day)
                     _set_state(context.connection, "last_digest_fingerprint", evidence_fingerprint)
                     _set_state(context.connection, "pending_announcement", "")
@@ -1367,7 +1051,7 @@ class ArxivDigestPlugin:
                 f"</div>"
             )
             item["display_relevance"] = display_score
-            item["display_local_relevance"] = int(row["local_score"]) if row["local_score"] is not None else None
+            item["display_local_relevance"] = int(row["local_score"] or 0) if row["local_score"] is not None else None
 
 
 plugin = ArxivDigestPlugin()

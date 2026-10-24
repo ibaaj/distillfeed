@@ -32,7 +32,7 @@ initial_import_max_entries_per_feed = 20
 initial_import_max_age_days = 30
 max_workers = 8
 max_workers_per_host = 2
-user_agent = "DistillFeed/0.24.3 (+private single-user feed reader)"
+user_agent = "DistillFeed/0.25.0 (+private single-user feed reader)"
 allow_private_urls = false
 # Optional server-admin-controlled drop directory for generated://name.xml feeds.
 # DistillFeed reads regular feed files from this directory but never executes
@@ -89,6 +89,22 @@ completion_notifications = false
 subscription_font_size = 14
 item_font_size = 14
 summary_font_size = 16
+review_default_view = "adaptive"
+review_page_size = 25
+review_compact_cards = true
+review_show_rationale = true
+review_rationale_lines = 2
+review_show_tags = true
+review_show_stats = true
+audio_reading_enabled = true
+audio_controls_expanded = false
+tts_volume = 0.65
+tts_rate = 1.0
+tts_chunk_chars = 600
+tts_pause_ms = 120
+youtube_embed_enabled = true
+article_theatre_enabled = true
+reader_theatre_wide = false
 
 [weather]
 enabled = true

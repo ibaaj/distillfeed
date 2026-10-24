@@ -32,11 +32,6 @@ CREATE TABLE distillfeed_arxiv_papers (
     pdf_url TEXT,
     announce_type TEXT,
     source TEXT NOT NULL,
-    submitted_at TEXT,
-    updated_at TEXT,
-    announced_at TEXT,
-    announcement_day TEXT,
-    announcement_source TEXT,
     local_score INTEGER,
     llm_score INTEGER,
     final_score REAL,
@@ -45,13 +40,7 @@ CREATE TABLE distillfeed_arxiv_papers (
     tags_json TEXT NOT NULL DEFAULT '[]',
     local_reasons_json TEXT NOT NULL DEFAULT '[]',
     evaluation_status TEXT NOT NULL DEFAULT 'pending',
-    evaluated_at TEXT,
-    score_model TEXT,
-    score_prompt_version TEXT,
-    score_rubric_version TEXT,
-    score_input_fingerprint TEXT,
-    score_batch_id TEXT,
-    score_paper_version TEXT
+    evaluated_at TEXT
 );
 """
 
@@ -116,8 +105,7 @@ def _build_database(path: Path) -> None:
                 status = "screened_out"
             arxiv_rows.append((
                 identifier, f"2608.{identifier:05d}", "v1", '["cs.AI"]', "cs.AI",
-                f"https://arxiv.org/pdf/2608.{identifier:05d}", "new", "rss",
-                None, published, published, day, "rss", local,
+                f"https://arxiv.org/pdf/2608.{identifier:05d}", "new", "rss", local,
                 score, float(local + (score or 0) * 0.35) if score is not None else None,
                 decision, f"Relevance rationale for paper {identifier}" if score is not None else "",
                 json.dumps(["reasoning", f"tag-{identifier % 5}"]),
@@ -134,10 +122,9 @@ def _build_database(path: Path) -> None:
         connection.executemany(
             """INSERT INTO distillfeed_arxiv_papers(
                    item_id,arxiv_id,version,categories_json,primary_category,pdf_url,
-                   announce_type,source,submitted_at,updated_at,announced_at,announcement_day,
-                   announcement_source,local_score,llm_score,final_score,decision,why,
+                   announce_type,source,local_score,llm_score,final_score,decision,why,
                    tags_json,local_reasons_json,evaluation_status,evaluated_at
-               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             arxiv_rows,
         )
 
@@ -285,7 +272,11 @@ def test_every_filter_and_preset_matches_its_contract(review_db: Path):
                 not item["is_read"] and item["ai_state"] == "scored"
                 and item["decision"] == "keep" and item["ai_score"] >= 70
             ),
-            "catch-up": lambda item: not item["is_read"],
+            "catch-up": lambda item: "2026-08-14" <= item["day"] <= TODAY,
+            "current-week": lambda item: "2026-08-17" <= item["day"] <= TODAY,
+            "last-5-days": lambda item: "2026-08-14" <= item["day"] <= TODAY,
+            "best": lambda item: item["ai_state"]=="scored" and item["decision"]=="keep" and item["ai_score"]>=70,
+            "best-read": lambda item: item["is_read"] and item["ai_state"]=="scored" and item["decision"]=="keep" and item["ai_score"]>=70,
             "today": lambda item: item["day"] == TODAY,
             "awaiting-ai": lambda item: item["ai_state"] == "pending",
             "starred": lambda item: item["is_starred"],
@@ -416,23 +407,23 @@ def test_scope_specific_defaults_keep_ordinary_feeds_complete_and_arxiv_ranked(r
         ordinary_feed_scope = resolve_review_scope(connection, feed_id=ordinary_feed)
         for scope in (ordinary_group_scope, ordinary_feed_scope):
             assert scope.is_arxiv is False
-            assert default_review_preset(scope) == "everything"
+            assert default_review_preset(scope) == "current-week"
             assert default_review_sort(scope) == "date"
             filters = parse_review_filters(
                 {}, default_preset=default_review_preset(scope),
                 default_sort=default_review_sort(scope), today=TODAY,
             )
-            assert filters["preset"] == "everything"
+            assert filters["preset"] == "current-week"
             assert filters["sort"] == "date"
             payload = list_review_days(connection, scope, filters, minimum_relevance=70)
             assert payload["counts"]["matching"] == payload["counts"]["total"] == 1
-            assert payload["scope"]["default_preset"] == "everything"
+            assert payload["scope"]["default_preset"] == "current-week"
             assert payload["scope"]["default_sort"] == "date"
 
         arxiv_scope = resolve_review_scope(connection, group_id=1)
-        assert default_review_preset(arxiv_scope) == "best-unread"
+        assert default_review_preset(arxiv_scope) == "current-week"
         assert default_review_sort(arxiv_scope) == "ai"
         connection.execute("UPDATE groups SET review_display_mode='direct' WHERE id=1")
         arxiv_direct = resolve_review_scope(connection, group_id=1)
-        assert default_review_preset(arxiv_direct) == "catch-up"
+        assert default_review_preset(arxiv_direct) == "current-week"
         assert default_review_sort(arxiv_direct) == "ai"

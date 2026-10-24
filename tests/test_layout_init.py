@@ -24,6 +24,7 @@ function loadRoute(route, viewportWidth, stored) {
   const properties = {};
   const context = {
     document: {
+      querySelector: selector => ({content: selector.includes('summary-font') ? '18' : '16'}),
       documentElement: {
         style: { setProperty: (name, value) => { properties[name] = value; } },
       },
@@ -56,7 +57,8 @@ const invalid = loadRoute('invalid-storage', 1600, {
   rssLeftWidth: 'not-a-number',
   rssMiddleWidth: '',
 }).properties;
-if (Object.keys(invalid).length !== 0) throw new Error(JSON.stringify(invalid));
+if ('--left-width' in invalid || '--middle-width' in invalid) throw new Error(JSON.stringify(invalid));
+if (invalid['--summary-size'] !== '18px' || invalid['--item-size'] !== '16px') throw new Error(JSON.stringify(invalid));
 
 process.stdout.write(JSON.stringify(transitions));
 """

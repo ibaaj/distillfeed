@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 from defusedxml import ElementTree as SafeET
 
 from .db import ensure_ungrouped, transaction, utcnow
+from .interests import validate_interests
 
 LOGGER = logging.getLogger(__name__)
 MAX_OPML_OUTLINES = 10_000
@@ -27,6 +28,7 @@ class FeedOutline:
     llm_enabled: bool | None = None
     position: int = 0
     ai_mode: str | None = None
+    interest_profile: str | None = None
 
 
 @dataclass
@@ -41,6 +43,7 @@ class GroupOutline:
     summary_item_budget: int | None = None
     ai_mode: str | None = None
     review_display_mode: str | None = None
+    interest_profile: str | None = None
 
 
 def _attr(element: ET.Element, name: str) -> str | None:
@@ -74,6 +77,8 @@ def parse_opml_bytes(content: bytes) -> list[GroupOutline]:
             raise ValueError(f"OPML nesting exceeds {MAX_OPML_DEPTH} levels")
         xml_url = _attr(node, "xmlUrl") or _attr(node, "url") if (_attr(node, "type") or "").casefold() in {"rss", "atom"} else _attr(node, "xmlUrl")
         title = _attr(node, "text") or _attr(node, "title") or xml_url or "Untitled"
+        interest = next((value for key,value in node.attrib.items() if key.casefold()=='distillfeedinterests'),None)
+        if interest is not None: interest = validate_interests(interest)
         llm_attribute = _attr(node, "llmEnabled")
         llm_enabled = None if llm_attribute is None else llm_attribute.casefold() not in {"false", "0", "no"}
         stored_position = _attr(node, "distillfeedPosition")
@@ -94,7 +99,7 @@ def parse_opml_bytes(content: bytes) -> list[GroupOutline]:
                     raise ValueError("An OPML feed AI mode is invalid")
             (destination or loose).feeds.append(
                 FeedOutline(
-                    title, xml_url, _attr(node, "htmlUrl"), llm_enabled, position, feed_mode,
+                    title, xml_url, _attr(node, "htmlUrl"), llm_enabled, position, feed_mode, interest,
                 )
             )
             return
@@ -127,7 +132,7 @@ def parse_opml_bytes(content: bytes) -> list[GroupOutline]:
         group = GroupOutline(
             title, llm_enabled=llm_enabled, position=position, ai_priority=priority,
             summary_interval_hours=interval, summary_item_budget=budget,
-            ai_mode=group_mode, review_display_mode=review_display_mode,
+            ai_mode=group_mode, review_display_mode=review_display_mode, interest_profile=interest,
         )
         (destination.groups if destination else top_groups).append(group)
         child_position = 0
@@ -199,6 +204,8 @@ def import_groups(connection, groups: Iterable[GroupOutline]) -> tuple[int, int]
                     ),
                 ).lastrowid
             )
+        if group.interest_profile is not None:
+            connection.execute('UPDATE groups SET interest_profile=? WHERE id=?',(validate_interests(group.interest_profile),group_id))
         group_count += 1
         for index, feed in enumerate(group.feeds):
             feed_position = int(feed.position if feed.position is not None else index)
@@ -226,6 +233,8 @@ def import_groups(connection, groups: Iterable[GroupOutline]) -> tuple[int, int]
                         feed.ai_mode or ("off" if feed.llm_enabled is False else "inherit"), utcnow(),
                     ),
                 )
+            if feed.interest_profile is not None:
+                connection.execute('UPDATE feeds SET interest_profile=? WHERE xml_url=?',(validate_interests(feed.interest_profile),feed.xml_url))
             feed_count += 1
         for index, child in enumerate(group.groups):
             upsert_group(child, group_id, int(child.position if child.position is not None else index))
@@ -270,6 +279,7 @@ def build_tree_from_database(connection) -> list[GroupOutline]:
             else str(row["ai_mode"]),
             review_display_mode=None if row["parent_id"] is None and row["title"] == "Ungrouped"
             else str(row["review_display_mode"]),
+            interest_profile=str(row["interest_profile"] or ""),
         )
         for row in rows
     }
@@ -290,7 +300,7 @@ def build_tree_from_database(connection) -> list[GroupOutline]:
             group.feeds.append(
                 FeedOutline(
                     feed["title"], feed["xml_url"], feed["html_url"],
-                    bool(feed["llm_enabled"]), int(feed["position"]), str(feed["ai_mode"]),
+                    bool(feed["llm_enabled"]), int(feed["position"]), str(feed["ai_mode"]), str(feed["interest_profile"] or ""),
                 )
             )
     loose = next((group for group in roots if group.title == "Ungrouped"), None)
@@ -317,6 +327,7 @@ def serialize_opml(groups: Iterable[GroupOutline]) -> bytes:
         attrs["distillfeedAIMode"] = feed.ai_mode or (
             "off" if feed.llm_enabled is False else "inherit"
         )
+        if feed.interest_profile is not None: attrs['distillfeedInterests'] = feed.interest_profile
         ET.SubElement(parent, "outline", attrs)
 
     def ordered(group: GroupOutline):
@@ -341,6 +352,7 @@ def serialize_opml(groups: Iterable[GroupOutline]) -> bytes:
                 "distillfeedReviewDisplayMode": group.review_display_mode or "daily",
             },
         )
+        if group.interest_profile is not None: element.set('distillfeedInterests',group.interest_profile)
         for entry in ordered(group):
             append_feed(element, entry) if isinstance(entry, FeedOutline) else append_group(element, entry)
 

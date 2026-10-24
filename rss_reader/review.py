@@ -7,14 +7,16 @@ import json
 import re
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Mapping
 
 from .presentation import render_plain_text, render_summary_markdown
+from .review_sql import query_context, filter_sql, order_keys, item_dict, COMPACT
+from distillfeed_arxiv.dates import canonical_day_sql
 
 
 _DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_PRESETS = {"best-unread", "catch-up", "today", "awaiting-ai", "starred", "everything", "custom"}
+_PRESETS = {"current-week", "current-month", "last-5-days", "best", "best-unread", "best-read", "today", "awaiting-ai", "starred", "everything", "custom"}
 _READ_STATES = {"all", "unread", "read"}
 _SAVED_STATES = {"all", "starred", "read-later"}
 _AI_STATES = {"all", "scored", "pending", "not-sent"}
@@ -35,16 +37,45 @@ class ReviewScope:
     review_display_mode: str
 
 
-def default_review_preset(scope: ReviewScope) -> str:
-    """Return the no-query preset for this review scope.
+def default_review_preset(
+    scope: ReviewScope, connection: sqlite3.Connection | None = None, *,
+    preference: str = "adaptive", today: str | None = None,
+) -> str:
+    """Choose a nonempty time window for the scope, without hiding read items.
 
-    Ordinary RSS/Atom scopes behave like an article inbox and therefore expose
-    every stored item by default.  The specialist arXiv workflow keeps its
-    relevance-first defaults.
+    Explicit URL filters always override this initial/reset default. Only source
+    dates and feed identifiers are selected: no descriptions or AI joins are loaded.
+    The same canonical UTC day policy is used as by review_sql.
     """
-    if not scope.is_arxiv:
+    if preference in _PRESETS and preference != "custom":
+        return preference
+    if connection is None:
+        return "current-week"  # Compatibility for independent callers.
+    if not scope.feed_ids:
         return "everything"
-    return "catch-up" if scope.review_display_mode == "direct" else "best-unread"
+    day = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
+    marks = ",".join("?" for _ in scope.feed_ids)
+    if _table_exists(connection, "distillfeed_arxiv_papers"):
+        day_sql = canonical_day_sql(connection)
+        join = "LEFT JOIN distillfeed_arxiv_papers ap ON ap.item_id=i.id"
+    else:
+        day_sql = "COALESCE(date(i.published_at),date(i.discovered_at),'undated')"
+        join = ""
+    future = "(f.xml_url NOT LIKE 'plugin://arxiv/%' AND julianday(i.published_at)>julianday(i.discovered_at)+2.0/24)"
+    display = f"CASE WHEN {future} THEN i.discovered_at ELSE i.published_at END"
+    day_sql = day_sql.replace("date(i.published_at)", f"date({display})")
+    row = connection.execute(
+        f"""SELECT MAX(day) FROM (
+            SELECT {day_sql} AS day FROM items i JOIN feeds f ON f.id=i.feed_id
+            {join} WHERE f.enabled=1 AND i.feed_id IN ({marks})
+        ) WHERE day<>'undated' AND day<=?""", [*scope.feed_ids, day.isoformat()],
+    ).fetchone()
+    latest = str(row[0] or "")
+    if latest >= (day - timedelta(days=day.weekday())).isoformat():
+        return "current-week"
+    if latest >= day.replace(day=1).isoformat():
+        return "current-month"
+    return "everything"
 
 
 def default_review_sort(scope: ReviewScope) -> str:
@@ -148,40 +179,43 @@ def _valid_day(value: Any) -> str:
     return text
 
 
-def preset_defaults(
-    preset: str, *, default_min_ai: int = 70, today: str | None = None,
-    default_sort: str = "ai",
-) -> dict[str, Any]:
-    day = today or datetime.now(UTC).date().isoformat()
+def preset_defaults(preset: str, *, default_min_ai: int = 70, today: str | None = None,
+                    default_sort: str = "ai") -> dict[str, Any]:
+    day = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
     base: dict[str, Any] = {
-        "read": "all", "saved": "all", "ai": "all", "decision": "all",
-        "min_ai": 0, "source": 0, "from": "", "to": "",
-        "sort": default_sort if default_sort in _SORTS else "ai",
+        "read":"all", "saved":"all", "ai":"all", "decision":"all", "min_ai":0,
+        "source":0,"from":"","to":"","sort":default_sort if default_sort in _SORTS else "ai",
     }
-    if preset == "best-unread":
-        base.update(read="unread", ai="scored", decision="keep", min_ai=default_min_ai, sort="ai")
-    elif preset == "catch-up":
-        base.update(read="unread")
-    elif preset == "today":
-        base.update(**{"from": day, "to": day})
-    elif preset == "awaiting-ai":
-        base.update(ai="pending", sort="local")
-    elif preset == "starred":
-        base.update(saved="starred")
+    if preset in {"best", "best-unread", "best-read"}:
+        base.update(ai="scored",decision="keep",min_ai=default_min_ai,sort="ai")
+        if preset != "best": base["read"] = "unread" if preset == "best-unread" else "read"
+    elif preset == "current-week":
+        base.update({"from":(day-timedelta(days=day.weekday())).isoformat(),"to":day.isoformat()})
+    elif preset == "current-month":
+        base.update({"from": day.replace(day=1).isoformat(), "to": day.isoformat()})
+    elif preset in {"last-5-days", "catch-up"}:
+        base.update({"from":(day-timedelta(days=4)).isoformat(),"to":day.isoformat()})
+    elif preset == "today": base.update({"from":day.isoformat(),"to":day.isoformat()})
+    elif preset == "awaiting-ai": base.update(ai="pending",sort="local")
+    elif preset == "starred": base.update(saved="starred")
     return base
 
 
 def parse_review_filters(
     values: Mapping[str, Any], *, default_min_ai: int = 70, today: str | None = None,
-    default_preset: str = "best-unread", default_sort: str = "ai",
+    default_preset: str = "best-unread", default_sort: str = "ai", default_page_size: int = 25,
 ) -> dict[str, Any]:
     fallback_preset = default_preset if default_preset in _PRESETS else "best-unread"
     fallback_sort = default_sort if default_sort in _SORTS else "ai"
+    if values.get("preset") == "catch-up":
+        # Upgrade old bookmarks without retaining their invisible unread-only filter.
+        values = {k:v for k,v in values.items() if k not in {"read","from","to"}}
+        values["preset"] = "last-5-days"
     preset = _choice(values.get("preset"), _PRESETS, fallback_preset)
     defaults = preset_defaults(
         preset, default_min_ai=default_min_ai, today=today, default_sort=fallback_sort,
     )
-    page_size = _integer(values.get("page_size"), 25, minimum=10, maximum=50)
+    page_size = _integer(values.get("page_size"), default_page_size, minimum=10, maximum=50)
     if page_size not in _PAGE_SIZES:
         page_size = 25
     query = str(values.get("q") or "").strip()[:200]
@@ -219,140 +253,15 @@ def _json_list(value: Any) -> list[str]:
     return [str(item) for item in parsed if str(item).strip()] if isinstance(parsed, list) else []
 
 
-def _review_rows(
-    connection: sqlite3.Connection, scope: ReviewScope, *, minimum_relevance: int,
-) -> list[dict[str, Any]]:
-    if not scope.feed_ids:
-        return []
-    marks = ",".join("?" for _ in scope.feed_ids)
-    has_arxiv = _table_exists(connection, "distillfeed_arxiv_papers")
-    if has_arxiv:
-        arxiv_select = """
-            ap.item_id AS arxiv_item_id,ap.arxiv_id,ap.pdf_url,ap.local_score,
-            ap.llm_score,ap.final_score,ap.decision AS arxiv_decision,
-            ap.why AS arxiv_why,ap.tags_json AS arxiv_tags_json,
-            ap.local_reasons_json,ap.evaluation_status,ap.submitted_at,
-            ap.updated_at AS arxiv_updated_at,ap.announced_at,ap.announcement_day,
-            ap.announcement_source,ap.score_model,ap.score_prompt_version,
-            ap.score_rubric_version,ap.score_input_fingerprint,ap.score_batch_id,
-            ap.score_paper_version
-        """
-        arxiv_join = "LEFT JOIN distillfeed_arxiv_papers ap ON ap.item_id=i.id"
-    else:
-        arxiv_select = """
-            NULL AS arxiv_item_id,NULL AS arxiv_id,NULL AS pdf_url,NULL AS local_score,
-            NULL AS llm_score,NULL AS final_score,NULL AS arxiv_decision,
-            NULL AS arxiv_why,NULL AS arxiv_tags_json,NULL AS local_reasons_json,
-            NULL AS evaluation_status,NULL AS submitted_at,NULL AS arxiv_updated_at,
-            NULL AS announced_at,NULL AS announcement_day,NULL AS announcement_source,
-            NULL AS score_model,NULL AS score_prompt_version,NULL AS score_rubric_version,
-            NULL AS score_input_fingerprint,NULL AS score_batch_id,NULL AS score_paper_version
-        """
-        arxiv_join = ""
-    rows = connection.execute(
-        f"""SELECT i.id,i.feed_id,i.title,i.url,i.author,i.published_at,i.source_published_at,
-                    i.discovered_at,i.date_warning,i.content_kind,i.content_kind_source,
-                    i.description_text,i.summary_eligible,i.is_read,i.is_starred,i.is_read_later,
-                    f.title AS feed_title,f.group_id,f.xml_url,f.llm_enabled,
-                    eval.relevance AS ordinary_ai_score,eval.description AS ordinary_ai_summary,
-                    eval.justification AS ordinary_ai_why,eval.story_cluster,
-                    legacy.importance AS legacy_ai_score,legacy.description AS legacy_ai_summary,
-                    legacy.justification AS legacy_ai_why,legacy.story_cluster AS legacy_story_cluster,
-                    COALESCE((SELECT GROUP_CONCAT(t.name, ' · ') FROM item_tags it
-                              JOIN tags t ON t.id=it.tag_id WHERE it.item_id=i.id),'') AS user_tags,
-                    {arxiv_select}
-               FROM items i JOIN feeds f ON f.id=i.feed_id
-               LEFT JOIN ai_evaluations eval ON eval.item_id=i.id AND eval.current=1
-               LEFT JOIN summary_items legacy ON legacy.rowid=(
-                   SELECT candidate.rowid FROM summary_items candidate
-                   JOIN summaries candidate_summary ON candidate_summary.id=candidate.summary_id
-                   JOIN llm_runs candidate_run ON candidate_run.id=candidate_summary.llm_run_id
-                   WHERE candidate.item_id=i.id AND candidate.included=1
-                     AND candidate_run.status='success'
-                   ORDER BY candidate_run.id DESC LIMIT 1
-               )
-               {arxiv_join}
-              WHERE f.enabled=1 AND i.feed_id IN ({marks})""",
-        scope.feed_ids,
-    ).fetchall()
-    result: list[dict[str, Any]] = []
-    for source in rows:
-        row = dict(source)
-        is_arxiv = row["arxiv_item_id"] is not None or str(row["xml_url"] or "").startswith("plugin://arxiv/")
-        arxiv_score = row["llm_score"]
-        ordinary_score = row["ordinary_ai_score"]
-        legacy_score = row["legacy_ai_score"]
-        ai_score = (
-            int(arxiv_score) if arxiv_score is not None
-            else int(ordinary_score) if ordinary_score is not None
-            else int(legacy_score) if legacy_score is not None
-            else None
-        )
-        if ai_score is not None:
-            ai_state = "scored"
-        elif is_arxiv and str(row["evaluation_status"] or "") == "pending":
-            ai_state = "pending"
-        elif is_arxiv and str(row["evaluation_status"] or "") == "screened_out":
-            ai_state = "not-sent"
-        elif not is_arxiv and bool(row["llm_enabled"]) and bool(row["summary_eligible"]):
-            ai_state = "pending"
-        else:
-            ai_state = "not-sent"
-        decision = ""
-        if ai_state == "scored":
-            stored_decision = str(row["arxiv_decision"] or "").strip().lower() if is_arxiv else ""
-            decision = stored_decision if stored_decision in {"keep", "drop"} else (
-                "keep" if int(ai_score) >= minimum_relevance else "drop"
-            )
-        if is_arxiv:
-            stamp = str(
-                row["announced_at"] or row["submitted_at"]
-                or row["published_at"] or row["discovered_at"] or ""
-            )
-            candidate_day = str(row["announcement_day"] or "")
-            day = candidate_day if _DAY.fullmatch(candidate_day) else "undated"
-        else:
-            stamp = str(row["published_at"] or row["discovered_at"] or "")
-            day = stamp[:10] if _DAY.fullmatch(stamp[:10]) else "undated"
-        arxiv_tags = _json_list(row["arxiv_tags_json"])
-        user_tags = [part.strip() for part in str(row["user_tags"] or "").split(" · ") if part.strip()]
-        tags = list(dict.fromkeys([*arxiv_tags, *user_tags]))
-        why = str(row["arxiv_why"] or row["ordinary_ai_why"] or row["legacy_ai_why"] or "").strip()
-        ai_summary = str(row["ordinary_ai_summary"] or row["legacy_ai_summary"] or "").strip()
-        story_cluster = str(row["story_cluster"] or row["legacy_story_cluster"] or "")
-        search_text = " ".join([
-            str(row["title"] or ""), str(row["author"] or ""), str(row["feed_title"] or ""),
-            " ".join(tags), why, ai_summary, str(row["description_text"] or ""),
-            str(row["arxiv_id"] or ""), str(row["content_kind"] or ""),
-        ]).casefold()
-        result.append({
-            "id": int(row["id"]), "feed_id": int(row["feed_id"]), "feed_title": str(row["feed_title"]),
-            "title": str(row["title"]), "url": str(row["url"] or ""), "author": str(row["author"] or ""),
-            "published_at": stamp, "source_published_at": str(row["source_published_at"] or ""),
-            "discovered_at": str(row["discovered_at"] or ""), "day": day,
-            "date_warning": str(row["date_warning"] or ""),
-            "content_kind": str(row["content_kind"] or ""),
-            "content_kind_source": str(row["content_kind_source"] or ""),
-            "description_text": str(row["description_text"] or ""),
-            "is_read": bool(row["is_read"]), "is_starred": bool(row["is_starred"]),
-            "is_read_later": bool(row["is_read_later"]), "tags": tags,
-            "ai_state": ai_state, "ai_score": ai_score, "decision": decision,
-            "local_score": int(row["local_score"]) if row["local_score"] is not None else None,
-            "why": why, "ai_summary": ai_summary, "story_cluster": story_cluster,
-            "is_arxiv": is_arxiv, "arxiv_id": str(row["arxiv_id"] or ""),
-            "pdf_url": str(row["pdf_url"] or ""), "local_reasons": _json_list(row["local_reasons_json"]),
-            "submitted_at": str(row["submitted_at"] or ""),
-            "announced_at": str(row["announced_at"] or ""),
-            "announcement_source": str(row["announcement_source"] or ""),
-            "score_model": str(row["score_model"] or ""),
-            "score_prompt_version": str(row["score_prompt_version"] or ""),
-            "score_rubric_version": str(row["score_rubric_version"] or ""),
-            "score_input_fingerprint": str(row["score_input_fingerprint"] or ""),
-            "score_batch_id": str(row["score_batch_id"] or ""),
-            "score_paper_version": str(row["score_paper_version"] or ""),
-            "search_text": search_text,
-        })
-    return result
+def _review_rows(connection: sqlite3.Connection, scope: ReviewScope, *, minimum_relevance: int) -> list[dict[str, Any]]:
+    # Compatibility helper for callers needing complete records. UI endpoints use
+    # bounded SQL below and never call this all-history method.
+    cte, params = query_context(connection, scope, minimum_relevance)
+    rows = [item_dict(row) for row in connection.execute(cte+" SELECT * FROM r",params)]
+    for row in rows:
+        row["search_text"] = " ".join(str(row.get(k) or "") for k in
+            ("title","author","feed_title","why","ai_summary","description_text","arxiv_id")).casefold()+" "+" ".join(row["tags"]).casefold()
+    return rows
 
 
 def _matches(item: dict[str, Any], filters: Mapping[str, Any]) -> bool:
@@ -452,7 +361,7 @@ def _decode_cursor(value: str, signature: str) -> tuple[int, ...]:
         raise ValueError("The review cursor does not match the current filters") from exc
 
 
-def _daily_briefs(connection: sqlite3.Connection, scope: ReviewScope) -> dict[str, dict[str, Any]]:
+def _daily_briefs(connection: sqlite3.Connection, scope: ReviewScope, *, days: set[str] | None = None) -> dict[str, dict[str, Any]]:
     if not scope.group_ids:
         return {}
     group_marks = ",".join("?" for _ in scope.group_ids)
@@ -461,30 +370,22 @@ def _daily_briefs(connection: sqlite3.Connection, scope: ReviewScope) -> dict[st
     if scope.kind == "feed":
         where = f"({where} OR s.scope_feed_id=?)"
         parameters.append(scope.scope_id)
-    use_arxiv_day = scope.is_arxiv and _table_exists(connection, "distillfeed_arxiv_papers")
-    arxiv_join = (
-        "JOIN distillfeed_arxiv_papers ap ON ap.item_id=i.id"
-        if use_arxiv_day else ""
-    )
-    day_expression = (
-        "COALESCE(ap.announcement_day,'undated')"
-        if use_arxiv_day
-        else "substr(COALESCE(i.published_at,i.discovered_at),1,10)"
-    )
+    has_arxiv = _table_exists(connection, "distillfeed_arxiv_papers")
+    join = "LEFT JOIN distillfeed_arxiv_papers ap ON ap.item_id=i.id" if has_arxiv else ""
+    day_expr = canonical_day_sql(connection) if has_arxiv else "COALESCE(date(i.published_at),date(i.discovered_at),'undated')"
+    having = "first_day=last_day"
+    if days is not None:
+        if not days: return {}
+        having += " AND first_day IN ("+",".join("?" for _ in days)+")"
+        parameters.extend(sorted(days))
     rows = connection.execute(
         f"""SELECT s.id,s.overview,s.sections_json,lr.model,lr.completed_at,
-                    SUM(CASE WHEN si.included=1 THEN 1 ELSE 0 END) AS selected_count,
-                    MIN({day_expression}) AS first_day,
-                    MAX({day_expression}) AS last_day
-               FROM summaries s JOIN llm_runs lr ON lr.id=s.llm_run_id
-               JOIN summary_items si ON si.summary_id=s.id
-               JOIN items i ON i.id=si.item_id
-               {arxiv_join}
-              WHERE lr.status='success' AND {where}
-              GROUP BY s.id
-             HAVING first_day=last_day
-              ORDER BY lr.id DESC""",
-        parameters,
+                SUM(CASE WHEN si.included=1 THEN 1 ELSE 0 END) AS selected_count,
+                MIN({day_expr}) AS first_day,MAX({day_expr}) AS last_day
+            FROM summaries s JOIN llm_runs lr ON lr.id=s.llm_run_id
+            JOIN summary_items si ON si.summary_id=s.id JOIN items i ON i.id=si.item_id
+            {join} WHERE lr.status='success' AND {where}
+            GROUP BY s.id HAVING {having} ORDER BY lr.id DESC""",parameters,
     ).fetchall()
     result: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -516,118 +417,77 @@ def _daily_briefs(connection: sqlite3.Connection, scope: ReviewScope) -> dict[st
     return result
 
 
-def list_review_days(
-    connection: sqlite3.Connection,
-    scope: ReviewScope,
-    filters: Mapping[str, Any],
-    *,
-    minimum_relevance: int,
-) -> dict[str, Any]:
-    all_items = _review_rows(connection, scope, minimum_relevance=minimum_relevance)
-    source_ids = {item["feed_id"] for item in all_items}
-    if int(filters["source"] or 0) and int(filters["source"]) not in source_ids:
+def list_review_days(connection: sqlite3.Connection, scope: ReviewScope, filters: Mapping[str, Any],
+                     *, minimum_relevance: int, before: str = "", limit: int = 60) -> dict[str, Any]:
+    if filters["source"] and int(filters["source"]) not in scope.feed_ids:
         raise ValueError("The selected source is outside this review scope")
-    filtered = [item for item in all_items if _matches(item, filters)]
-    all_by_day: dict[str, list[dict[str, Any]]] = {}
-    filtered_by_day: dict[str, list[dict[str, Any]]] = {}
-    for item in all_items:
-        all_by_day.setdefault(item["day"], []).append(item)
-    for item in filtered:
-        filtered_by_day.setdefault(item["day"], []).append(item)
-    briefs = _daily_briefs(connection, scope)
-    days: list[dict[str, Any]] = []
-    for day in sorted(filtered_by_day, reverse=True):
-        matching = filtered_by_day[day]
-        complete_set = all_by_day.get(day, matching)
-        days.append({
-            "day": day,
-            "total": len(complete_set), "matching": len(matching),
-            "unread": sum(not item["is_read"] for item in complete_set),
-            "scored": sum(item["ai_state"] == "scored" for item in complete_set),
-            "pending": sum(item["ai_state"] == "pending" for item in complete_set),
-            "not_sent": sum(item["ai_state"] == "not-sent" for item in complete_set),
-            "kept": sum(item["decision"] == "keep" for item in complete_set),
-            "complete": not any(not item["is_read"] for item in complete_set),
-            "brief": briefs.get(day),
-        })
-    sources: list[dict[str, Any]] = []
-    by_source: dict[int, dict[str, Any]] = {}
-    for item in all_items:
-        source = by_source.setdefault(item["feed_id"], {
-            "id": item["feed_id"], "title": item["feed_title"], "total": 0,
-        })
-        source["total"] += 1
-    sources = sorted(by_source.values(), key=lambda item: (str(item["title"]).casefold(), int(item["id"])))
-    counts = {
-        "total": len(all_items), "matching": len(filtered),
-        "unread": sum(not item["is_read"] for item in all_items),
-        "scored": sum(item["ai_state"] == "scored" for item in all_items),
-        "pending": sum(item["ai_state"] == "pending" for item in all_items),
-        "not_sent": sum(item["ai_state"] == "not-sent" for item in all_items),
-        "starred": sum(item["is_starred"] for item in all_items),
-    }
-    default_open = next((day["day"] for day in days if not day["complete"]), days[0]["day"] if days else "")
-    return {
-        "scope": {
-            "kind": scope.kind, "id": scope.scope_id, "title": scope.title,
-            "is_arxiv": scope.is_arxiv,
-            "preference_group_id": scope.preference_group_id,
-            "review_display_mode": scope.review_display_mode,
-            "default_preset": default_review_preset(scope),
-            "default_sort": default_review_sort(scope),
-        },
-        "filters": dict(filters), "counts": counts, "sources": sources,
-        "days": days, "default_open_day": default_open,
-    }
+    if before and before != "undated": _valid_day(before)
+    limit = max(1,min(60,int(limit)))
+    cte, params = query_context(connection,scope,minimum_relevance)
+    match, args = filter_sql(filters)
+    counts = dict(connection.execute(cte+f""" SELECT COUNT(*) AS total,
+        COALESCE(SUM(CASE WHEN {match} THEN 1 ELSE 0 END),0) AS matching,
+        COALESCE(SUM(is_read=0),0) AS unread,COALESCE(SUM(ai_state='scored'),0) AS scored,
+        COALESCE(SUM(ai_state='pending'),0) AS pending,COALESCE(SUM(ai_state='not-sent'),0) AS not_sent,
+        COALESCE(SUM(is_starred),0) AS starred FROM r""",[*params,*args]).fetchone())
+    boundary = ""
+    boundary_args = []
+    if before == "undated": boundary = "AND 0"
+    elif before: boundary="AND (day<? OR day='undated')"; boundary_args=[before]
+    rows = connection.execute(cte+f""" SELECT day,COUNT(*) AS total,
+        SUM(CASE WHEN {match} THEN 1 ELSE 0 END) AS matching,
+        SUM(is_read=0) AS unread,SUM(ai_state='scored') AS scored,
+        SUM(ai_state='pending') AS pending,SUM(ai_state='not-sent') AS not_sent,
+        SUM(decision='keep') AS kept
+        FROM r WHERE 1 {boundary} GROUP BY day HAVING matching>0
+        ORDER BY (day='undated') ASC,day DESC LIMIT ?""",[*params,*args,*boundary_args,limit+1]).fetchall()
+    has_more=len(rows)>limit
+    days=[dict(row) for row in rows[:limit]]
+    briefs=_daily_briefs(connection,scope,days={day['day'] for day in days})
+    for day in days:
+        day.update(complete=not day['unread'],brief=briefs.get(day['day']))
+    sources=[dict(row) for row in connection.execute(cte+" SELECT feed_id AS id,feed_title AS title,COUNT(*) AS total FROM r GROUP BY feed_id ORDER BY feed_title COLLATE NOCASE,feed_id",params)]
+    default_open=next((day['day'] for day in days if day['day']!='undated'),"")
+    return {"scope":{"kind":scope.kind,"id":scope.scope_id,"title":scope.title,"is_arxiv":scope.is_arxiv,
+              "preference_group_id":scope.preference_group_id,"review_display_mode":scope.review_display_mode,
+              "default_preset":default_review_preset(scope),"default_sort":default_review_sort(scope)},
+            "filters":dict(filters),"counts":counts,"sources":sources,"days":days,
+            "default_open_day":default_open,"has_more_days":has_more,
+            "next_day_cursor":days[-1]['day'] if has_more and days else ""}
 
 
-def list_review_day_items(
-    connection: sqlite3.Connection,
-    scope: ReviewScope,
-    day: str,
-    filters: Mapping[str, Any],
-    *,
-    minimum_relevance: int,
-    cursor: str = "",
-) -> dict[str, Any]:
-    if day != "undated":
-        _valid_day(day)
-    items = [
-        item for item in _review_rows(connection, scope, minimum_relevance=minimum_relevance)
-        if item["day"] == day and _matches(item, filters)
-    ]
-    mode = str(filters["sort"])
-    items.sort(key=lambda item: _sort_key(item, mode))
-    signature = _filters_signature(scope, day, filters)
-    start = 0
+def list_review_day_items(connection: sqlite3.Connection, scope: ReviewScope, day: str,
+                          filters: Mapping[str, Any], *, minimum_relevance: int,
+                          cursor: str = "") -> dict[str, Any]:
+    if day != "undated": _valid_day(day)
+    if filters["source"] and int(filters["source"]) not in scope.feed_ids:
+        raise ValueError("The selected source is outside this review scope")
+    cte,params=query_context(connection,scope,minimum_relevance)
+    match,args=filter_sql(filters)
+    condition=f"day=? AND ({match})"
+    bindings=[*params,day,*args]
+    total=int(connection.execute(cte+f" SELECT COUNT(*) FROM r WHERE {condition}",bindings).fetchone()[0])
+    keys=order_keys(str(filters['sort']))
+    signature=_filters_signature(scope,day,filters)
     if cursor:
-        key = _decode_cursor(cursor, signature)
-        while start < len(items) and _sort_key(items[start], mode) <= key:
-            start += 1
-    page_size = int(filters["page_size"])
-    selected = items[start:start + page_size]
-    has_more = start + page_size < len(items)
-    next_cursor = _encode_cursor(signature, _sort_key(selected[-1], mode)) if selected and has_more else ""
-    compact: list[dict[str, Any]] = []
-    for item in selected:
-        compact.append({
-            "id": item["id"], "feed_id": item["feed_id"], "feed_title": item["feed_title"],
-            "title": item["title"], "url": item["url"], "author": item["author"],
-            "published_at": item["published_at"], "source_published_at": item["source_published_at"],
-            "day": item["day"], "date_warning": item["date_warning"],
-            "content_kind": item["content_kind"], "content_kind_source": item["content_kind_source"],
-            "is_read": item["is_read"], "is_starred": item["is_starred"],
-            "is_read_later": item["is_read_later"], "tags": item["tags"],
-            "ai_state": item["ai_state"], "ai_score": item["ai_score"],
-            "decision": item["decision"], "local_score": item["local_score"],
-            "why": item["why"][:280], "is_arxiv": item["is_arxiv"],
-            "arxiv_id": item["arxiv_id"], "pdf_url": item["pdf_url"],
-            "cohort": _cohort(item),
-        })
-    return {
-        "day": day, "items": compact, "total": len(items),
-        "next_cursor": next_cursor, "has_more": has_more,
-    }
+        key=_decode_cursor(cursor,signature)
+        if len(key)!=len(keys): raise ValueError("Invalid review cursor sort key")
+        condition+=f" AND ({','.join(keys)})>({','.join('?' for _ in keys)})"
+        bindings.extend(key)
+    page_size=int(filters['page_size'])
+    rows=connection.execute(cte+f" SELECT {COMPACT} FROM r WHERE {condition} ORDER BY {','.join(keys)} LIMIT ?",[*bindings,page_size+1]).fetchall()
+    more=len(rows)>page_size
+    items=[item_dict(row) for row in rows[:page_size]]
+    def key_for(item):
+        score=int(item['ai_score']) if item['ai_score'] is not None else -1
+        local=int(item['local_score']) if item['local_score'] is not None else -1
+        stamp=int(item['stamp']); identifier=int(item['id'])
+        if filters['sort']=='date': return (-stamp,-identifier)
+        if filters['sort']=='local': return (-local,item['cohort'],-score,-stamp,-identifier)
+        return (item['cohort'],-score,-local,-stamp,-identifier)
+    next_cursor=_encode_cursor(signature,key_for(items[-1])) if more and items else ""
+    for item in items: item.pop('stamp',None)
+    return {'day':day,'items':items,'total':total,'has_more':more,'next_cursor':next_cursor}
 
 
 def _normalised_text(value: Any) -> str:
@@ -657,9 +517,9 @@ def review_item_details(
     *,
     minimum_relevance: int,
 ) -> dict[str, Any] | None:
-    item = next((entry for entry in _review_rows(
-        connection, scope, minimum_relevance=minimum_relevance,
-    ) if int(entry["id"]) == int(item_id)), None)
+    cte, params = query_context(connection, scope, minimum_relevance)
+    row = connection.execute(cte + " SELECT * FROM r WHERE id=?", [*params, int(item_id)]).fetchone()
+    item = item_dict(row) if row else None
     if item is None:
         return None
     stored = connection.execute(
@@ -680,7 +540,7 @@ def review_item_details(
     local_reasons = item["local_reasons"]
     local_html = ""
     if local_reasons:
-        local_html = "<ul>" + "".join(f"<li>{html.escape(reason)}</li>" for reason in local_reasons) + "</ul>"
+        local_html = "<ul>" + "".join(f"<li>{html.escape(str(reason))}</li>" for reason in local_reasons) + "</ul>"
     return {
         "id": item["id"], "title": item["title"],
         "summary_html": str(render_summary_markdown(summary_text)) if summary_text else "",
@@ -690,57 +550,13 @@ def review_item_details(
         "local_rationale_html": local_html,
         "url": item["url"], "pdf_url": item["pdf_url"],
         "is_arxiv": item["is_arxiv"], "tags": item["tags"],
-        "date_warning": item["date_warning"],
-        "source_published_at": item["source_published_at"],
-        "discovered_at": item["discovered_at"],
-        "content_kind": item["content_kind"],
-        "announcement_source": item["announcement_source"],
-        "submitted_at": item["submitted_at"],
-        "announced_at": item["announced_at"],
-        "score_model": item["score_model"],
-        "score_prompt_version": item["score_prompt_version"],
-        "score_rubric_version": item["score_rubric_version"],
-        "score_batch_id": item["score_batch_id"],
-        "score_paper_version": item["score_paper_version"],
     }
 
 
-def finish_review_day(
-    connection: sqlite3.Connection,
-    scope: ReviewScope,
-    day: str,
-) -> dict[str, Any]:
-    if day != "undated":
-        _valid_day(day)
-    if not scope.feed_ids:
-        return {"status": "ok", "day": day, "matched": 0, "changed": 0, "unread": 0}
-    marks = ",".join("?" for _ in scope.feed_ids)
-    parameters: list[Any] = list(scope.feed_ids)
-    if scope.is_arxiv and _table_exists(connection, "distillfeed_arxiv_papers"):
-        day_expression = (
-            "id IN (SELECT item_id FROM distillfeed_arxiv_papers "
-            "WHERE COALESCE(announcement_day,'undated')=?)"
-        )
-        parameters.append(day)
-    else:
-        day_expression = (
-            "substr(COALESCE(published_at,discovered_at),1,10)=?"
-            if day != "undated"
-            else "substr(COALESCE(published_at,discovered_at),1,10) NOT GLOB '????-??-??'"
-        )
-        if day != "undated":
-            parameters.append(day)
-    where = f"feed_id IN ({marks}) AND {day_expression}"
-    matched = int(connection.execute(
-        f"SELECT COUNT(*) FROM items WHERE {where}", parameters,
-    ).fetchone()[0])
-    cursor = connection.execute(
-        f"UPDATE items SET is_read=1 WHERE is_read=0 AND {where}", parameters,
-    )
-    unread = int(connection.execute(
-        f"SELECT COUNT(*) FROM items WHERE is_read=0 AND {where}", parameters,
-    ).fetchone()[0])
-    return {
-        "status": "ok", "day": day, "matched": matched,
-        "changed": max(int(cursor.rowcount), 0), "unread": unread,
-    }
+def finish_review_day(connection: sqlite3.Connection, scope: ReviewScope, day: str) -> dict[str, Any]:
+    if day != "undated": _valid_day(day)
+    cte,params=query_context(connection,scope,0)
+    matched=int(connection.execute(cte+" SELECT COUNT(*) FROM r WHERE day=?",[*params,day]).fetchone()[0])
+    connection.execute(cte+" UPDATE items SET is_read=1 WHERE is_read=0 AND id IN (SELECT id FROM r WHERE day=?)",[*params,day])
+    changed=int(connection.execute('SELECT changes()').fetchone()[0])
+    return {'status':'ok','day':day,'matched':matched,'changed':changed,'unread':0}

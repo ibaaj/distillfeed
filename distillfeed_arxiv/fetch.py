@@ -85,9 +85,8 @@ def parse_rss(xml_text: str, category: str) -> list[Paper]:
             arxiv_id=arxiv_id, version=version, title=title, abstract=abstract,
             authors=authors, categories=list(dict.fromkeys(categories)), primary_category=category,
             link=link, pdf_link=link.replace("/abs/", "/pdf/") + ".pdf",
-            published=published, updated=None, source="rss", announce_type=announce,
-            source_categories=[category], submitted_at=None, announced_at=published,
-            announcement_source="rss",
+            published=published, updated=published, source="rss", announce_type=announce,
+            source_categories=[category], announced_at=published, announcement_source="rss",
         ))
     return papers
 
@@ -124,8 +123,7 @@ def parse_atom(xml_text: str, selected_categories: list[str]) -> list[Paper]:
             arxiv_id, version, title,
             clean_text(entry.findtext("atom:summary", default="", namespaces=namespaces)),
             authors, categories, primary, link, pdf_url, published, updated, "api",
-            source_categories=sources, submitted_at=published, announced_at=None,
-            announcement_source=None,
+            source_categories=sources, submitted_at=published, announcement_source="unknown",
         ))
     return papers
 
@@ -162,7 +160,6 @@ def fetch_api_window(categories: list[str], since: datetime, until: datetime, cf
 
 
 def merge_papers(*collections: list[Paper]) -> list[Paper]:
-    """Merge richer API metadata without losing the RSS announcement date."""
     merged: dict[str, Paper] = {}
     for collection in collections:
         for paper in collection:
@@ -175,13 +172,9 @@ def merge_papers(*collections: list[Paper]) -> list[Paper]:
             prefer.categories = list(dict.fromkeys(prefer.categories + fallback.categories))
             prefer.source_categories = list(dict.fromkeys(prefer.source_categories + fallback.source_categories))
             prefer.announce_type = prefer.announce_type or fallback.announce_type
-            prefer.submitted_at = prefer.submitted_at or fallback.submitted_at
-            prefer.announced_at = prefer.announced_at or fallback.announced_at
-            prefer.announcement_source = (
-                prefer.announcement_source or fallback.announcement_source
-                or ("rss" if prefer.announced_at else None)
-            )
-            sources = {part for value in (prefer.source, fallback.source) for part in value.split("+")}
-            prefer.source = "api+rss" if {"api", "rss"} <= sources else prefer.source
+            prefer.announced_at = current.announced_at or paper.announced_at
+            prefer.submitted_at = current.submitted_at or paper.submitted_at
+            prefer.announcement_source = "rss" if prefer.announced_at else "unknown"
+            prefer.source = "api+rss"
             merged[paper.arxiv_id] = prefer
     return list(merged.values())

@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .config import Config
+from .interests import interest_map
 from .db import group_descendant_ids, utcnow
 
 
@@ -123,6 +124,8 @@ def selected_payload_rows(
         {
             "item_id": identifier,
             "feed_id": int(by_id[identifier]["feed_id"]),
+            "interests": str(snapshot.get("feed_interests", {}).get(
+                str(by_id[identifier]["feed_id"]), snapshot.get("interests", ""))),
             "group_id": int(by_id[identifier]["group_id"]),
             "group_title": str(by_id[identifier]["group_title"]),
             "feed_title": str(by_id[identifier]["feed_title"]),
@@ -294,6 +297,9 @@ def build_plan(
     # This is the immutable source policy used for both selection and
     # composition. A change made while a job is running applies to the next job.
     snapshot["sources"] = {"groups": source_groups, "feeds": source_feeds}
+    profiles = interest_map(connection, str(snapshot["interests"]))
+    snapshot["feed_interests"] = {str(feed["id"]): profiles.get(feed["id"], snapshot["interests"])
+                                 for feed in source_feeds}
     policy_id = snapshot_hash(snapshot)
     if not group_ids:
         return {
