@@ -158,10 +158,15 @@ with sync_playwright() as play:
   assert metrics['cardTitle'] and metrics['caret'] and metrics['score'], width
   assert abs(metrics['cardTitle']['cy']-metrics['caret']['cy']) < 9, (width,'title/arrow misaligned',metrics)
   assert abs(metrics['cardTitle']['cy']-metrics['score']['cy']) < 9, (width,'title/score misaligned',metrics)
+  # RC7: AI score should remain a compact, content-sized status pill.
+  assert metrics['score']['height'] <= 23, (width,'oversized AI score badge',metrics)
+  assert metrics['score']['width'] <= 52, (width,'overwide AI score badge',metrics)
   if metrics['pane']['width']>1070:
    row=[metrics[k] for k in ['layout','refresh','update','ai','audio','font','help']]
    assert max(x['cy'] for x in row)-min(x['cy'] for x in row)<8, (width,'controls wrapped',metrics)
-   assert metrics['status']['y'] >= max(x['bottom'] for x in row)-1, (width,'stats not below',metrics)
+   # RC6 keeps detailed statistics offscreen but accessible at wide widths.
+   assert (metrics['status']['width'] <= 2 or
+           metrics['status']['y'] >= max(x['bottom'] for x in row)-1), (width,'status overlay',metrics)
    assert abs(metrics['title']['cy']-metrics['controls']['cy']) < 10, (width,'heading title misaligned',metrics)
   for key in ['layout','refresh','update','ai','audio','font','help']:
    r=metrics[key]
@@ -198,6 +203,11 @@ with sync_playwright() as play:
   select(page,'review-preset',preset)
   assert page.locator('#review-preset').input_value()==preset
   assert not page.locator('.review-error-page').count(),preset
+  if preset == 'awaiting-ai':
+   pending = page.locator('.review-score-pending').first
+   pending.wait_for()
+   bounds = pending.bounding_box()
+   assert bounds and bounds['height'] <= 23 and bounds['width'] <= 75, (preset,bounds)
  checks.append('all nine presets executed with SQL-backed transport fixture')
  select(page,'review-preset','current-week')
  page.screenshot(path=str(LOG/'arxiv-review-wide.png'),full_page=False)

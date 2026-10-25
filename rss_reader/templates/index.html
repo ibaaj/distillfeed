@@ -21,12 +21,12 @@
   <meta name="review-default-sort" content="{{ review_default_sort or ('ai' if is_arxiv_scope else 'date') }}">
   <meta name="arxiv-digest-scope" content="{{ 'true' if is_arxiv_scope else 'false' }}">
   <meta name="item-sort-profile" content="{{ item_sort_profile or 'date' }}">
-  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='distillfeed-icon.svg', v='0.25.0-rc5') }}">
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='distillfeed-icon.svg', v='0.25.0-rc8') }}">
   <link rel="manifest" href="{{ url_for('static', filename='manifest.webmanifest') }}">
   <meta name="theme-color" content="#315f9c">
   <title>DistillFeed</title>
-  <script src="{{ url_for('static', filename='layout-init.js', v='0.25.0-rc5') }}"></script>
-  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='0.25.0-rc5') }}">
+  <script src="{{ url_for('static', filename='layout-init.js', v='0.25.0-rc8') }}"></script>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='0.25.0-rc8') }}">
 </head>
 {% set reader_notices = system_notices|default([], true) %}
 <body class="reader-page{% if ui.dark_mode %} dark-mode{% endif %}">
@@ -139,7 +139,7 @@
 
     <section id="review-app" class="review-pane{% if ui.review_compact_cards|default(true) %} compact-cards{% endif %}" data-default-min-ai="{{ summary_minimum_relevance }}">
       <header class="review-heading">
-        <div class="review-heading-title"><strong id="items-scope-title">{{ scope_title or 'Choose a subscription' }}</strong></div>
+        <div class="review-heading-title" id="review-heading-title" title="{{ scope_title or 'Choose a subscription' }}"><strong id="items-scope-title">{{ scope_title or 'Choose a subscription' }}</strong><span id="review-heading-count" class="review-heading-count"{% if not ui.review_show_stats|default(true) %} hidden{% endif %}></span></div>
         <span class="review-heading-actions">
           {% if selected_feed_id or selected_group_id %}
             <label class="review-layout-control" title="Choose how day sections open. Saved for this OPML group and inherited by its feeds."><span aria-hidden="true">Day view</span><select id="review-display-mode" aria-label="Day view: choose open one day or show items directly"><option value="daily" {% if review_display_mode == 'daily' %}selected{% endif %}>Open one day</option><option value="direct" {% if review_display_mode == 'direct' %}selected{% endif %}>Show items directly</option></select></label>
@@ -151,7 +151,7 @@
               <button id="summary-ai-config-save" type="button">Save AI configuration</button>
               <details id="review-interests" class="review-interests"><summary>Topics and interests</summary><label for="review-interests-text">What matters to you in {{ scope_title }}?</label><textarea id="review-interests-text" rows="4" maxlength="8000"></textarea><div><button type="button" id="review-interests-save">Save interests</button><span id="review-interests-status" role="status">Open to load the saved profile.</span></div><p>Empty text inherits the parent or global interests. Changes apply to future evaluations, not existing scores.</p></details>
               <button type="button" class="scope-global-settings" data-settings-open="settings-ai">Global AI settings…</button>
-            </div></details>{% else %}<details id="arxiv-scope-config" class="summary-ai-config action-menu"><summary aria-label="AI configuration for {{ scope_title }}" title="AI for {{ scope_title }}">AI for {{ scope_title }}</summary><div><p>The arXiv digest uses its own ranking prompt and screening settings.</p><button type="button" data-settings-open="settings-arxiv">Open arXiv configuration</button></div></details>{% endif %}
+            </div></details>{% else %}<details id="arxiv-scope-config" class="summary-ai-config action-menu"><summary aria-label="AI configuration for {{ scope_title }}" title="AI for {{ scope_title }}">AI for {{ scope_title }}</summary><div class="scope-config-popover arxiv-config-popover"><p>The arXiv digest uses its own ranking prompt and screening settings.</p><button type="button" data-settings-open="settings-arxiv">Open arXiv configuration</button></div></details>{% endif %}
           {% endif %}
           <span class="review-reader-utilities">
           {% if selected_feed_id or selected_group_id %}
@@ -355,9 +355,9 @@
     </div>
   </form></dialog>
 
-  <script src="{{ url_for('static', filename='review-state.js', v='0.25.0-rc5') }}" defer></script>
-  <script src="{{ url_for('static', filename='reader-tools.js', v='0.25.0-rc5') }}" defer></script>
-  <script src="{{ url_for('static', filename='review.js', v='0.25.0-rc5') }}" defer></script>
-  <script src="{{ url_for('static', filename='app.js', v='0.25.0-rc5') }}" defer></script>
+  <script src="{{ url_for('static', filename='review-state.js', v='0.25.0-rc8') }}" defer></script>
+  <script src="{{ url_for('static', filename='reader-tools.js', v='0.25.0-rc8') }}" defer></script>
+  <script src="{{ url_for('static', filename='review.js', v='0.25.0-rc8') }}" defer></script>
+  <script src="{{ url_for('static', filename='app.js', v='0.25.0-rc8') }}" defer></script>
 </body>
 </html>

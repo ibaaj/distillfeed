@@ -177,6 +177,61 @@ with sync_playwright() as play:
  def select(page,control,value):
   page.locator('#'+control).select_option(value);settled(page)
  page=new_page(1)
+ # RC6: the compact scope header has one visible source/count/control row.
+ heading_title = page.locator('#review-heading-title')
+ scope_count = page.locator('#review-heading-count')
+ assert '(844 results)' in scope_count.inner_text(),scope_count.inner_text()
+ assert '837' in heading_title.get_attribute('title') or '844' in heading_title.get_attribute('title')
+ header_title_box,header_control_box=(heading_title.bounding_box(),page.locator('.review-heading-actions').bounding_box())
+ assert abs(header_title_box['y']-header_control_box['y'])<12,(header_title_box,header_control_box)
+ assert header_control_box['x'] > header_title_box['x']
+ assert page.locator('#review-result-status').inner_text().endswith('2026-08-17 – 2026-08-18')
+ checks.append('RC6 compact header: source, visible result count and controls share one row; detailed date/counts remain accessible')
+ # The day actions are siblings of the summary, not descendants that toggle
+ # the native details element when clicked. They only exist visually while open.
+ first_day=page.locator('details.review-day').first
+ first_summary=first_day.locator('> summary.review-day-summary')
+ first_actions=first_day.locator('> .review-day-actions')
+ assert first_actions.is_visible()
+ day_head_box,day_action_box=first_summary.bounding_box(),first_actions.bounding_box()
+ assert day_action_box['y']>=day_head_box['y']-2 and day_action_box['y']+day_action_box['height']<=day_head_box['y']+day_head_box['height']+2,(day_head_box,day_action_box)
+ first_summary.click();settled(page)
+ assert not first_day.evaluate('(el)=>el.open')
+ assert not first_actions.is_visible()
+ first_summary.click();settled(page)
+ assert first_day.evaluate('(el)=>el.open') and first_actions.is_visible()
+ assert not first_actions.evaluate('(el)=>el.closest(".review-day-body")')
+ checks.append('RC6 day actions share open-day header, vanish when collapsed, and do not nest in the disclosure summary')
+ # Inline tags are visible next to read actions; relevance rationale appears
+ # beside authors instead of adding a third text line.
+ first_card=page.locator('.review-item').first
+ meta_box=first_card.locator('.review-item-meta').bounding_box()
+ rationale_box=first_card.locator('.review-rationale-preview').bounding_box()
+ tags_box=first_card.locator('.review-tags-inline').bounding_box()
+ star_box=first_card.locator('[data-action="star"]').bounding_box()
+ assert meta_box and rationale_box and tags_box and star_box
+ assert abs(meta_box['y']-rationale_box['y'])<13,(meta_box,rationale_box)
+ assert rationale_box['x']>=meta_box['x']+meta_box['width']-1,(meta_box,rationale_box)
+ assert tags_box['x']<star_box['x'] and abs(tags_box['y']-star_box['y'])<13,(tags_box,star_box)
+ assert first_card.locator('.review-tags-inline .review-tag').count()>=1
+ checks.append('RC6 author/rationale and tag/action horizontal alignment verified')
+ # The specialist arXiv flyout must keep its CTA within its bordered box.
+ page.locator('#arxiv-scope-config > summary').click()
+ pop_box=page.locator('#arxiv-scope-config > .arxiv-config-popover').bounding_box()
+ button_box=page.locator('#arxiv-scope-config [data-settings-open="settings-arxiv"]').bounding_box()
+ assert pop_box and button_box
+ assert button_box['x']>=pop_box['x']-2 and button_box['x']+button_box['width']<=pop_box['x']+pop_box['width']+2,(pop_box,button_box)
+ page.locator('#arxiv-scope-config > summary').click()
+ page.set_viewport_size({'width':430,'height':900});page.wait_for_timeout(50)
+ page.locator('#arxiv-scope-config > summary').click()
+ narrow_popup=page.locator('#arxiv-scope-config > .arxiv-config-popover').bounding_box()
+ narrow_button=page.locator('#arxiv-scope-config [data-settings-open="settings-arxiv"]').bounding_box()
+ assert narrow_popup and narrow_button and narrow_popup['x']>=-1 and narrow_popup['x']+narrow_popup['width']<=431,(narrow_popup,narrow_button)
+ assert narrow_button['x']>=narrow_popup['x']-1 and narrow_button['x']+narrow_button['width']<=narrow_popup['x']+narrow_popup['width']+1,(narrow_popup,narrow_button)
+ page.keyboard.press('Escape')
+ assert not page.locator('#arxiv-scope-config').evaluate('(el)=>el.open')
+ page.set_viewport_size({'width':1500,'height':1000})
+ checks.append('RC6 arXiv specialist config contained at desktop and phone widths')
  # RC4: prioritize score -> disclosure arrow -> title. Secondary actions are
  # at the right, never a long View content button before the title.
  def layout_box(selector):
@@ -253,6 +308,8 @@ with sync_playwright() as play:
  assert 'Check feeds of YouTube' in page.locator('#scope-refresh-button').inner_text()
  assert 'Update summaries of YouTube' in page.locator('#scope-update-button').inner_text()
  assert page.locator('.review-item').count()==10
+ assert page.locator('.review-no-brief').count()==0
+ checks.append('RC6 missing daily briefs no longer insert a placeholder row for ordinary feeds')
  page.locator('#summary-ai-config > summary').click()
  page.locator('#review-interests summary').click();settled(page)
  page.wait_for_function('document.querySelector("#review-interests-text").placeholder.includes("Global")')
@@ -263,8 +320,9 @@ with sync_playwright() as play:
  checks.append('source interest editor inside scope configuration persists SQLite preference without closing its feedback')
  page.locator('#summary-ai-config > summary').click()
  assert not page.locator('#review-audio-disclosure').evaluate('(el)=>el.open')
- assert page.locator('#review-result-status').evaluate('(el)=>Boolean(el.closest(".review-heading-title"))')
- checks.append('audio hidden by default; counts and date chips next to source title')
+ assert page.locator('#review-heading-count').count() == 1
+ assert page.locator('#review-heading-title').get_attribute('title')
+ checks.append('audio hidden by default; compact counts next to scope title, full counts available on hover')
  page.locator('article[data-item-id="10001"] [data-action="play-video"]').click()
  assert page.locator('#reader-theatre').evaluate('(el)=>el.open')
  assert page.locator('#reader-frame-container iframe').get_attribute('src').startswith('https://www.youtube-nocookie.com/embed/')
@@ -310,18 +368,25 @@ with sync_playwright() as play:
  # controls outside the viewport or create an extra actions-only line.
  long_title='A comprehensive theoretical investigation into logic based learning and reasoning under imprecise uncertainty with verified constraints and multiple nested concept explanations'
  page.locator('.review-item-title').first.evaluate('(el,t)=>{el.textContent=t}',long_title)
- for width in (320, 375, 430, 620, 768, 900, 1200, 1500):
+ for width in (320, 375, 430, 620, 768, 900, 1200, 1500, 1720, 2048):
   page.set_viewport_size({'width':width,'height':900})
   page.wait_for_timeout(30)
   assert page.evaluate('document.documentElement.scrollWidth <= innerWidth+1'),f'horizontal page overflow at {width}px'
   assert page.locator('.review-item-title').first.is_visible(),f'title inaccessible at {width}px'
+  if width >= 1500:
+   header_name=page.locator('#review-heading-title').bounding_box()
+   header_actions=page.locator('.review-heading-actions').bounding_box()
+   assert header_name and header_actions and abs(header_name['y']-header_actions['y'])<12,(width,header_name,header_actions)
+   day_header=page.locator('details.review-day > summary').first.bounding_box()
+   day_actions=page.locator('details.review-day[open] > .review-day-actions').first.bounding_box()
+   assert day_header and day_actions and abs(day_header['y']+day_header['height']/2-(day_actions['y']+day_actions['height']/2))<5,(width,day_header,day_actions)
   if width >= 1200:
    score,arrow,title,read=(layout_box('.review-item .review-score'),layout_box('.review-item [data-action="toggle-item"]'),layout_box('.review-item-title'),layout_box('.review-item [data-action="read"]'))
    assert score['x']<arrow['x']<title['x']<read['x'],(width,score,arrow,title,read)
   if width <= 430:
    title,score,arrow,meta,read=(layout_box('.review-item-title'),layout_box('.review-item .review-score'),layout_box('.review-item [data-action="toggle-item"]'),layout_box('.review-item-meta'),layout_box('.review-item [data-action="read"]'))
    assert score['x']<arrow['x']<title['x'],(width,score,arrow,title)
-   assert meta and read and abs(meta['y']-read['y'])<25,(width,meta,read)
+   assert meta and read and read['y']<=meta['y']+15,(width,meta,read)
  page.set_viewport_size({'width':430,'height':900});page.screenshot(path=str(LOG/'review-narrow.png'),full_page=False)
  # RC4 narrow layout keeps score/toggle/title together and actions beside metadata;
  # the text-size slider stays immediately to the right of Audio reading.
@@ -390,6 +455,29 @@ with sync_playwright() as play:
  assert page.locator('[data-action="article-theatre"]').count()==0
  assert not page.locator('.review-scope-meta').is_visible()
  checks.append('settings-disable states remove speech, embeds, stats and item controls')
+ # RC6 moved whole-day controls outside the body and summary: verify their
+ # actual button actions still update persistent SQLite without collapsing day.
+ page.close();page=new_page(50)
+ first=page.locator('details.review-day').first
+ assert first.evaluate('(el)=>el.open') and first.locator('> .review-day-actions').is_visible()
+ first.locator('> .review-day-actions [data-action="mark-visible-read"]').click()
+ settled(page)
+ with connect(DB) as verification:
+  assert verification.execute('SELECT count(*) FROM items WHERE feed_id=50 AND is_read=0').fetchone()[0] == 0
+ assert first.evaluate('(el)=>el.open')
+ assert first.locator('> .review-day-actions [data-action="mark-day-read"]').is_disabled()
+ checks.append('RC6 mark-loaded-read commits all loaded items, keeps day open, and disables redundant whole-day action')
+ page.close();page=new_page(60)
+ page.on('dialog',lambda dialog: dialog.accept())
+ active_day=page.locator('details.review-day').first
+ assert active_day.evaluate('(el)=>el.open')
+ active_day.locator('> .review-day-actions [data-action="mark-day-read"]').click()
+ settled(page)
+ with connect(DB) as verification:
+  assert verification.execute('SELECT count(*) FROM items WHERE feed_id=60 AND is_read=0').fetchone()[0] == 0
+ assert active_day.evaluate('(el)=>el.open')
+ assert active_day.locator('> .review-day-actions [data-action="mark-day-read"]').is_disabled()
+ checks.append('RC6 mark-day-read confirmation is idempotent and leaves expanded day accessible')
  assert not errors, errors
  browser.close()
 (LOG/'browser-result.json').write_text(json.dumps({'passed':checks,'errors':errors,'api_requests':len(requests),'transport':'local binding to actual SQLite handlers; Flask HTTP not exercised'},indent=2))

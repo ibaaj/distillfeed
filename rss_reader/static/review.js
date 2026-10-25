@@ -60,6 +60,8 @@
 
   const daysRoot = document.getElementById('review-day-list');
   const resultStatus = document.getElementById('review-result-status');
+  const headingCount = document.getElementById('review-heading-count');
+  const headingTitle = document.getElementById('review-heading-title');
   const activeFilters = document.getElementById('review-active-filters');
   const presetControl = document.getElementById('review-preset');
   const searchControl = document.getElementById('review-search');
@@ -248,7 +250,14 @@
 
   function renderItem(item) {
     const open = Boolean(state.openItems[item.id]);
-    const tags = (item.tags || []).slice(0, 12).map(tag => `<span class="review-tag">${escapeHTML(tag)}</span>`).join('');
+    const allTags = (item.tags || []).slice(0, 12).map(tag => String(tag));
+    const visibleTags = allTags.slice(0, 2);
+    const tags = visibleTags.map(tag => `<span class="review-tag">${escapeHTML(tag)}</span>`).join('')
+      + (allTags.length > 2 ? `<span class="review-tag review-tag-more">+${allTags.length - 2}</span>` : '');
+    const tagsInline = tags && preferences.review_show_tags !== false
+      ? `<div class="review-tags review-tags-inline" title="${escapeHTML(allTags.join(' · '))}" aria-label="Tags: ${escapeHTML(allTags.join(', '))}">${tags}</div>` : '';
+    const rationaleInline = preferences.review_show_rationale !== false && item.why && item.ai_state === 'scored'
+      ? `<p class="review-rationale-preview" title="${escapeHTML(item.why)}">${escapeHTML(item.why)}</p>` : '';
     const readPending = Boolean(state.readMutations[item.id]);
     const resource = safeHref(item.url);
     const title = resource
@@ -266,6 +275,7 @@
             ${item.is_short ? '<span class="review-tag review-short">Shorts</span>' : ''}${title}
           </div>
           <div class="review-item-actions" role="group" aria-label="Item actions">
+            ${tagsInline}
             <button type="button" data-action="star" data-item-id="${item.id}" aria-label="${item.is_starred ? 'Remove favorite' : 'Add favorite'}" aria-pressed="${Boolean(item.is_starred)}" class="review-icon-button${item.is_starred ? ' active' : ''}" title="${item.is_starred ? 'Remove favorite' : 'Add favorite'}">★</button>
             <button type="button" data-action="read-later" data-item-id="${item.id}" aria-label="${item.is_read_later ? 'Remove from Read later' : 'Add to Read later'}" aria-pressed="${Boolean(item.is_read_later)}" class="review-icon-button${item.is_read_later ? ' active' : ''}" title="${item.is_read_later ? 'Remove from Read later' : 'Add to Read later'}">↗</button>
             <button type="button" data-action="read" data-item-id="${item.id}" aria-label="${item.is_read ? 'Mark as unread' : 'Mark as read'}" class="review-icon-button review-read-button" title="${item.is_read ? 'Mark as unread' : 'Mark as read'}" ${readPending ? 'disabled aria-busy="true"' : ''}>${item.is_read ? '○' : '●'}</button>
@@ -273,10 +283,11 @@
             ${open && preferences.audio_reading_enabled !== false ? `<button type="button" class="review-icon-button review-inline-tool" data-action="speak-item" data-item-id="${item.id}" aria-label="Read item aloud" title="Read item aloud" ${ready ? '' : 'disabled'}>♫</button>` : ''}
             ${open && preferences.article_theatre_enabled !== false && window.DistillFeedReaderCore?.articleURL(item.url) ? `<button type="button" class="review-icon-button review-inline-tool" data-action="article-theatre" data-item-id="${item.id}" aria-label="Open article theatre" title="Open article theatre">▣</button>` : ''}
           </div>
-          <div class="review-item-meta"><span>${escapeHTML(item.feed_title)}</span>${item.author ? `<span>${escapeHTML(item.author)}</span>` : ''}${item.published_at ? `<time datetime="${escapeHTML(item.published_at)}">${escapeHTML(formatTimestamp(item.published_at))} UTC</time>` : ''}${item.future_date_warning ? '<span title="The source date was implausibly ahead of retrieval; the retrieval date is used for sorting.">Future source date</span>' : ''}</div>
+          <div class="review-item-information">
+            <div class="review-item-meta"><span>${escapeHTML(item.feed_title)}</span>${item.author ? `<span>${escapeHTML(item.author)}</span>` : ''}${item.published_at ? `<time datetime="${escapeHTML(item.published_at)}">${escapeHTML(formatTimestamp(item.published_at))} UTC</time>` : ''}${item.future_date_warning ? '<span title="The source date was implausibly ahead of retrieval; the retrieval date is used for sorting.">Future source date</span>' : ''}</div>
+            ${rationaleInline}
+          </div>
         </div>
-        ${preferences.review_show_rationale !== false && item.why && item.ai_state === 'scored' ? `<p class="review-rationale-preview" title="Full AI relevance rationale is available using the expand arrow">${escapeHTML(item.why)}</p>` : ''}
-        ${tags && preferences.review_show_tags !== false ? `<div class="review-tags">${tags}</div>` : ''}
       </div>
       <div id="review-item-details-${item.id}" class="review-item-details" ${open ? '' : 'hidden'}>${open ? renderItemDetails(item.id) : ''}</div>
     </article>`;
@@ -389,12 +400,12 @@
         <span class="review-day-title"><strong>${escapeHTML(formatDay(day.day))}</strong><span>${escapeHTML(daySummaryText(day))}</span></span>
         <span class="review-day-state">${day.day === 'undated' ? 'Optional archive' : day.complete ? 'Read' : ''}</span>
       </summary>
+      <div class="review-day-actions" role="group" aria-label="Day reading actions"${details.open ? '' : ' hidden'}>
+        <button type="button" data-action="mark-visible-read" data-day="${escapeHTML(day.day)}" ${bulkReadDays.has(day.day) ? 'disabled aria-busy="true"' : ''}>Mark loaded items read</button>
+        <button type="button" data-action="mark-day-read" data-day="${escapeHTML(day.day)}" data-total="${day.total}" data-unread="${day.unread}" data-hidden="${hiddenCount}" ${(state.finishingDays[day.day] || !day.unread) ? 'disabled' : ''}>${escapeHTML(State.dayReadActionLabel(day.day, today, day.unread, Boolean(state.finishingDays[day.day])))}</button>
+      </div>
       <div class="review-day-body">
-        ${brief ? `<details class="review-daily-brief"><summary>Daily brief · ${Number(brief.selected_count || 0).toLocaleString()} selected</summary><div class="review-daily-brief-body review-markdown">${brief.html || ''}</div><div class="review-reading-actions">${preferences.audio_reading_enabled !== false ? `<button type="button" data-action="speak-brief" data-day="${escapeHTML(day.day)}">Read brief aloud</button>` : ''}</div><footer>${escapeHTML(brief.model || '')}${brief.completed_at ? ` · ${escapeHTML(brief.completed_at)}` : ''}</footer></details>` : '<p class="review-no-brief">No daily brief is stored for this day.</p>'}
-        <div class="review-day-actions">
-          <button type="button" data-action="mark-visible-read" data-day="${escapeHTML(day.day)}" ${bulkReadDays.has(day.day) ? 'disabled aria-busy="true"' : ''}>Mark loaded items read</button>
-          <button type="button" data-action="mark-day-read" data-day="${escapeHTML(day.day)}" data-total="${day.total}" data-unread="${day.unread}" data-hidden="${hiddenCount}" ${(state.finishingDays[day.day] || !day.unread) ? 'disabled' : ''}>${escapeHTML(State.dayReadActionLabel(day.day, today, day.unread, Boolean(state.finishingDays[day.day])))}</button>
-        </div>
+        ${brief ? `<details class="review-daily-brief"><summary>Daily brief · ${Number(brief.selected_count || 0).toLocaleString()} selected</summary><div class="review-daily-brief-body review-markdown">${brief.html || ''}</div><div class="review-reading-actions">${preferences.audio_reading_enabled !== false ? `<button type="button" data-action="speak-brief" data-day="${escapeHTML(day.day)}">Read brief aloud</button>` : ''}</div><footer>${escapeHTML(brief.model || '')}${brief.completed_at ? ` · ${escapeHTML(brief.completed_at)}` : ''}</footer></details>` : ''}
         <div class="review-day-items" data-day-items="${escapeHTML(day.day)}"></div>
       </div>`;
       details.dataset.openState = String(details.open);
@@ -402,6 +413,8 @@
         const open = details.open;
         if (details.dataset.openState === String(open)) return;
         details.dataset.openState = String(open);
+        const dayActions = details.querySelector('.review-day-actions');
+        if (dayActions) dayActions.hidden = !open;
         transition({ type: 'TOGGLE_DAY', day: day.day, open }, false);
         persistOpenDays();
         if (open && !state.dayData[day.day]) loadDay(day.day, false);
@@ -439,6 +452,16 @@
       resultStatus.textContent = loading
         ? 'Loading…'
         : State.countSummary(counts, state.filters, options) + (range ? ` – ${range}` : '');
+    }
+    if (headingCount && !headingCount.hidden) {
+      const matching = Number(state.counts?.matching);
+      headingCount.textContent = Number.isFinite(matching) && state.status !== 'loading'
+        ? `(${matching.toLocaleString()} ${matching === 1 ? 'result' : 'results'})` : '';
+    }
+    if (headingTitle && resultStatus) {
+      const exposeStats = !resultStatus.closest('.review-scope-meta')?.hidden;
+      headingTitle.title = exposeStats && resultStatus.textContent
+        ? `${scope.title} — ${resultStatus.textContent}` : scope.title;
     }
     renderDays();
   }

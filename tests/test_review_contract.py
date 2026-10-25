@@ -137,9 +137,9 @@ def test_filter_toolbar_frontend_backend_contract_is_complete():
     assert '.review-card-toolbar .review-title-line {' in stylesheet
     assert 'align-items: center;' in stylesheet
     assert "block.items" not in template
-    assert "v='0.25.0-rc5'" in template
-    assert "service-worker.js?v=0.25.0-rc5" in (
+    assert "v='0.25.0-rc8'" in template
+    assert "service-worker.js?v=0.25.0-rc8" in (
         ROOT / "rss_reader" / "static" / "app.js"
     ).read_text("utf-8")
-    assert "distillfeed-v250-rc5" in service_worker
-    assert "?v=0.25.0-rc5" in service_worker
+    assert "distillfeed-v250-rc8" in service_worker
+    assert "?v=0.25.0-rc8" in service_worker
