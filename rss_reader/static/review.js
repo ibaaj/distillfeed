@@ -718,28 +718,44 @@
     const titles = state.days.filter(day => state.openDays[day.day]).flatMap(day => state.dayData[day.day]?.items || []).map(item => item.title);
     window.DistillFeedReader?.speakText(titles.join('. '));
   });
+  // 0.25.0 RC9: interests are visible within the AI menu without a nested
+  // disclosure. Fetch the saved scope exactly once when the outer menu opens.
   const interestsPanel = document.getElementById('review-interests');
   const interestsText = document.getElementById('review-interests-text');
   const interestsStatus = document.getElementById('review-interests-status');
+  const interestsSave = document.getElementById('review-interests-save');
+  const interestsRetry = document.getElementById('review-interests-retry');
+  const interestsMenu = document.getElementById('summary-ai-config');
   let interestsLoaded = false;
   let interestsLoading = false;
-  const interestsSave = document.getElementById('review-interests-save');
   if (interestsText) interestsText.disabled = true;
   if (interestsSave) interestsSave.disabled = true;
-  interestsPanel?.addEventListener('toggle', async () => {
-    if (!interestsPanel.open || interestsLoaded || interestsLoading) return;
-    interestsLoading = true; interestsStatus.textContent = 'Loading saved interests…';
+  async function loadInterests() {
+    if (!interestsPanel || interestsLoaded || interestsLoading) return;
+    interestsLoading = true;
+    interestsStatus.textContent = 'Loading saved interests…';
+    if (interestsRetry) interestsRetry.hidden = true;
     const query = new URLSearchParams(); scopeParams(query);
     try {
       const data = await requestJSON(`/api/review/interests?${query}`);
       interestsText.value = data.value || '';
       interestsText.placeholder = data.effective || 'What matters to you in this selection?';
-      interestsStatus.textContent = data.inherited ? 'Inheriting the parent/global profile. Enter text to override it.' : 'A custom profile is saved for this selection.';
+      interestsStatus.textContent = data.inherited
+        ? 'Inheriting the parent/global profile. Enter text to override it.'
+        : 'A custom profile is saved for this selection.';
       interestsLoaded = true;
-      interestsText.disabled = false; if (interestsSave) interestsSave.disabled = false;
-    } catch (error) { interestsStatus.textContent = `${error.message}. Close and reopen this section to retry.`; }
-    finally { interestsLoading = false; }
+      interestsText.disabled = false;
+      if (interestsSave) interestsSave.disabled = false;
+    } catch (error) {
+      interestsStatus.textContent = `${error.message}. Retry loading without closing the menu.`;
+      if (interestsRetry) interestsRetry.hidden = false;
+    } finally { interestsLoading = false; }
+  }
+  interestsMenu?.addEventListener('toggle', () => {
+    if (interestsMenu.open) void loadInterests();
   });
+  if (interestsMenu?.open) void loadInterests();
+  interestsRetry?.addEventListener('click', () => { void loadInterests(); });
   document.getElementById('review-interests-save')?.addEventListener('click', async event => {
     const button = event.currentTarget; if (button.disabled) return; button.disabled = true;
     const body = { value: interestsText.value }; if (scope.feedId) body.feed_id = scope.feedId; else body.group_id = scope.groupId;

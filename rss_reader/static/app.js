@@ -1486,8 +1486,12 @@
   const popupMenus = [...document.querySelectorAll('details.action-menu, details.nav-menu, details.summary-ai-config')];
   const popupBackdrop = document.getElementById('popup-backdrop');
   syncPopupBackdrop = () => {
+    // Source AI settings live inside the reader's container stacking context.
+    // A document-level backdrop would cover the menu on mobile and intercept
+    // textarea/button clicks. Outside-click, focus and Escape still close it.
     const actionSheetOpen = !settingsDesktop.matches
-      && popupMenus.some(menu => menu.classList.contains('action-menu') && menu.open);
+      && popupMenus.some(menu => menu.classList.contains('action-menu')
+        && menu.open && !menu.matches('#summary-ai-config, #arxiv-scope-config'));
     if (popupBackdrop) popupBackdrop.hidden = !actionSheetOpen;
   };
   popupMenus.forEach(menu => menu.addEventListener('toggle', () => {
@@ -1596,7 +1600,7 @@
   });
   if ('serviceWorker' in navigator) {
     const offline = document.querySelector('meta[name="offline-cache-enabled"]')?.content === 'true';
-    if (offline) navigator.serviceWorker.register('/static/service-worker.js?v=0.25.0-rc8').catch(() => {});
+    if (offline) navigator.serviceWorker.register('/static/service-worker.js?v=0.25.0-rc9').catch(() => {});
     else Promise.all([
       navigator.serviceWorker.getRegistrations().then(registrations => Promise.all(
         registrations.map(registration => registration.unregister())

@@ -311,7 +311,9 @@ with sync_playwright() as play:
  assert page.locator('.review-no-brief').count()==0
  checks.append('RC6 missing daily briefs no longer insert a placeholder row for ordinary feeds')
  page.locator('#summary-ai-config > summary').click()
- page.locator('#review-interests summary').click();settled(page)
+ assert page.locator('#review-interests').is_visible()
+ assert page.locator('#review-interests summary').count()==0
+ page.wait_for_function('!document.querySelector("#review-interests-text").disabled');settled(page)
  page.wait_for_function('document.querySelector("#review-interests-text").placeholder.includes("Global")')
  page.locator('#review-interests-text').fill('Prefer formal logic tutorials.')
  page.locator('#review-interests-save').click();settled(page)

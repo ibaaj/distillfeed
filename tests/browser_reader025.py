@@ -228,7 +228,9 @@ with sync_playwright() as play:
  assert 'Update summaries of YouTube' in page.locator('#scope-update-button').inner_text()
  assert page.locator('.review-item').count()==10
  page.locator('#summary-ai-config > summary').click()
- page.locator('#review-interests summary').click();settled(page)
+ assert page.locator('#review-interests').is_visible()
+ assert page.locator('#review-interests summary').count()==0
+ page.wait_for_function('!document.querySelector("#review-interests-text").disabled');settled(page)
  page.wait_for_function('document.querySelector("#review-interests-text").placeholder.includes("Global")')
  page.locator('#review-interests-text').fill('Prefer formal logic tutorials.')
  page.locator('#review-interests-save').click();settled(page)

@@ -21,12 +21,12 @@
   <meta name="review-default-sort" content="{{ review_default_sort or ('ai' if is_arxiv_scope else 'date') }}">
   <meta name="arxiv-digest-scope" content="{{ 'true' if is_arxiv_scope else 'false' }}">
   <meta name="item-sort-profile" content="{{ item_sort_profile or 'date' }}">
-  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='distillfeed-icon.svg', v='0.25.0-rc8') }}">
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='distillfeed-icon.svg', v='0.25.0-rc9') }}">
   <link rel="manifest" href="{{ url_for('static', filename='manifest.webmanifest') }}">
   <meta name="theme-color" content="#315f9c">
   <title>DistillFeed</title>
-  <script src="{{ url_for('static', filename='layout-init.js', v='0.25.0-rc8') }}"></script>
-  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='0.25.0-rc8') }}">
+  <script src="{{ url_for('static', filename='layout-init.js', v='0.25.0-rc9') }}"></script>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='0.25.0-rc9') }}">
 </head>
 {% set reader_notices = system_notices|default([], true) %}
 <body class="reader-page{% if ui.dark_mode %} dark-mode{% endif %}">
@@ -149,7 +149,7 @@
               <label><span>Use AI</span><select data-summary-source-field="ai_mode">{% if selected_feed_id %}<option value="inherit" {% if scope_ai_own_mode == 'inherit' %}selected{% endif %}>Follow group</option>{% endif %}<option value="automatic" {% if scope_ai_own_mode == 'automatic' %}selected{% endif %}>Automatic</option><option value="manual" {% if scope_ai_own_mode == 'manual' %}selected{% endif %}>Only on request</option><option value="off" {% if scope_ai_own_mode == 'off' %}selected{% endif %}>Never use AI</option></select></label>
               {% if not selected_feed_id %}<label><span>Priority in global updates</span><select data-summary-source-field="ai_priority"><option value="high" {% if scope_ai_priority == 'high' %}selected{% endif %}>High</option><option value="normal" {% if scope_ai_priority == 'normal' %}selected{% endif %}>Normal</option><option value="low" {% if scope_ai_priority == 'low' %}selected{% endif %}>Low</option></select></label><label><span>Automatic interval</span><select data-summary-source-field="summary_interval_hours"><option value="0" {% if scope_summary_interval_hours == 0 %}selected{% endif %}>Every scheduled update</option><option value="1" {% if scope_summary_interval_hours == 1 %}selected{% endif %}>At most hourly</option><option value="6" {% if scope_summary_interval_hours == 6 %}selected{% endif %}>At most every 6 hours</option><option value="12" {% if scope_summary_interval_hours == 12 %}selected{% endif %}>At most every 12 hours</option><option value="24" {% if scope_summary_interval_hours == 24 %}selected{% endif %}>At most daily</option><option value="168" {% if scope_summary_interval_hours == 168 %}selected{% endif %}>At most weekly</option></select></label><label><span>Maximum entries per update</span><input data-summary-source-field="summary_item_budget" type="number" min="0" max="1000" value="{{ scope_summary_item_budget }}"><small>0 lets the global workload decide.</small></label>{% else %}<p>This feed uses its group’s priority and schedule.</p>{% endif %}
               <button id="summary-ai-config-save" type="button">Save AI configuration</button>
-              <details id="review-interests" class="review-interests"><summary>Topics and interests</summary><label for="review-interests-text">What matters to you in {{ scope_title }}?</label><textarea id="review-interests-text" rows="4" maxlength="8000"></textarea><div><button type="button" id="review-interests-save">Save interests</button><span id="review-interests-status" role="status">Open to load the saved profile.</span></div><p>Empty text inherits the parent or global interests. Changes apply to future evaluations, not existing scores.</p></details>
+              <section id="review-interests" class="review-interests" aria-labelledby="review-interests-title"><h3 id="review-interests-title">Topics and interests</h3><label for="review-interests-text">What matters to you in {{ scope_title }}?</label><textarea id="review-interests-text" rows="4" maxlength="8000" aria-describedby="review-interests-status"></textarea><div class="review-interests-save-row"><button type="button" id="review-interests-save">Save interests</button><button type="button" id="review-interests-retry" hidden>Retry loading</button></div><span id="review-interests-status" role="status" aria-live="polite">Loading saved interests when this menu opens…</span><p>Empty text inherits the parent or global interests. Changes apply to future evaluations, not existing scores.</p></section>
               <button type="button" class="scope-global-settings" data-settings-open="settings-ai">Global AI settings…</button>
             </div></details>{% else %}<details id="arxiv-scope-config" class="summary-ai-config action-menu"><summary aria-label="AI configuration for {{ scope_title }}" title="AI for {{ scope_title }}">AI for {{ scope_title }}</summary><div class="scope-config-popover arxiv-config-popover"><p>The arXiv digest uses its own ranking prompt and screening settings.</p><button type="button" data-settings-open="settings-arxiv">Open arXiv configuration</button></div></details>{% endif %}
           {% endif %}
@@ -355,9 +355,9 @@
     </div>
   </form></dialog>
 
-  <script src="{{ url_for('static', filename='review-state.js', v='0.25.0-rc8') }}" defer></script>
-  <script src="{{ url_for('static', filename='reader-tools.js', v='0.25.0-rc8') }}" defer></script>
-  <script src="{{ url_for('static', filename='review.js', v='0.25.0-rc8') }}" defer></script>
-  <script src="{{ url_for('static', filename='app.js', v='0.25.0-rc8') }}" defer></script>
+  <script src="{{ url_for('static', filename='review-state.js', v='0.25.0-rc9') }}" defer></script>
+  <script src="{{ url_for('static', filename='reader-tools.js', v='0.25.0-rc9') }}" defer></script>
+  <script src="{{ url_for('static', filename='review.js', v='0.25.0-rc9') }}" defer></script>
+  <script src="{{ url_for('static', filename='app.js', v='0.25.0-rc9') }}" defer></script>
 </body>
 </html>

@@ -17,11 +17,11 @@ def test_arxiv_config_menu_keeps_primary_button_contrast_on_hover_and_keyboard_f
     assert 'outline-offset: 2px;' in css
 
 
-def test_rc8_stylesheet_is_not_stuck_in_rc7_service_worker_cache():
+def test_rc9_stylesheet_and_scripts_are_not_stuck_in_rc8_service_worker_cache():
     template = (ROOT / 'rss_reader/templates/index.html').read_text(encoding='utf-8')
     script = (ROOT / 'rss_reader/static/app.js').read_text(encoding='utf-8')
     worker = (ROOT / 'rss_reader/static/service-worker.js').read_text(encoding='utf-8')
-    assert "filename='app.css', v='0.25.0-rc8'" in template
-    assert 'service-worker.js?v=0.25.0-rc8' in script
-    assert "distillfeed-v250-rc8" in worker
-    assert '/static/app.css?v=0.25.0-rc8' in worker
+    assert "filename='app.css', v='0.25.0-rc9'" in template
+    assert 'service-worker.js?v=0.25.0-rc9' in script
+    assert "distillfeed-v250-rc9" in worker
+    assert '/static/app.css?v=0.25.0-rc9' in worker

@@ -1582,3 +1582,78 @@ a.review-item-title:hover, a.review-item-title:focus-visible { color: var(--acce
   padding-block: 5px;
   row-gap: 0;
 }
+
+/* 0.25.0 RC9: ordinary-source AI editor: one visible interests section and
+   strictly bounded popover contents, including Firefox intrinsic grid sizes. */
+.summary-ai-config > .scope-config-popover {
+  box-sizing: border-box;
+  width: min(360px, calc(100vw - 24px));
+  max-width: calc(100vw - 16px);
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
+}
+.summary-ai-config > .scope-config-popover > *,
+.summary-ai-config > .scope-config-popover > label,
+.summary-ai-config .review-interests,
+.summary-ai-config .review-interests > * {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+}
+.summary-ai-config > .scope-config-popover > label {
+  grid-template-columns: minmax(0, 1fr) minmax(0, .85fr);
+}
+.summary-ai-config > .scope-config-popover :is(button, p, label, span, h3) {
+  overflow-wrap: anywhere;
+}
+.summary-ai-config > .scope-config-popover button { white-space: normal; }
+.summary-ai-config .review-interests {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 9px 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+.summary-ai-config .review-interests h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+.summary-ai-config #review-interests-text {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  margin: 6px 0 9px;
+  resize: vertical;
+  overflow-wrap: anywhere;
+}
+.summary-ai-config .review-interests-save-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.summary-ai-config .review-interests-save-row button { flex: 1 1 120px; min-width: 0; }
+.summary-ai-config #review-interests-retry[hidden] { display: none !important; }
+.summary-ai-config #review-interests-status,
+.summary-ai-config .review-interests p {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+@media (max-width: 620px) {
+  .summary-ai-config > .scope-config-popover {
+    position: fixed;
+    top: auto;
+    bottom: max(8px, env(safe-area-inset-bottom));
+    left: max(8px, env(safe-area-inset-left));
+    right: max(8px, env(safe-area-inset-right));
+    width: auto;
+    max-width: none;
+    min-width: 0;
+    max-height: calc(100dvh - 24px);
+    overflow-y: auto;
+  }
+}

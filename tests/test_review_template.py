@@ -83,3 +83,29 @@ def test_ordinary_reader_template_defaults_to_everything_and_newest_first():
     assert '<meta name="review-default-sort" content="date">' in rendered
     assert '<option value="everything" selected>Everything</option>' in rendered
     assert '<option value="date" selected>Newest first</option>' in rendered
+
+
+
+def test_ordinary_ai_interests_editor_is_permanently_visible_inside_menu():
+    environment = Environment(
+        loader=FileSystemLoader(ROOT / "rss_reader" / "templates"),
+        autoescape=select_autoescape(["html"]),
+        undefined=ChainableUndefined,
+    )
+    environment.globals.update(
+        csrf_token=lambda: "test-token",
+        url_for=lambda endpoint, **values: "/static/" + str(values.get("filename", endpoint)),
+    )
+    rendered = environment.get_template("index.html").render(
+        ui={"subscription_font_size": 16, "item_font_size": 16, "summary_font_size": 16},
+        tree=[], groups=[], locks=[], system_notices=[],
+        selected_group_id=42, selected_feed_id=None, is_arxiv_scope=False,
+        scope_title="YouTube", scope_ai_mode="automatic",
+        scope_ai_own_mode="automatic", scope_ai_priority="normal",
+        scope_summary_interval_hours=0, scope_summary_item_budget=0,
+    )
+    assert '<section id="review-interests"' in rendered
+    assert '<h3 id="review-interests-title">Topics and interests</h3>' in rendered
+    assert '<details id="review-interests"' not in rendered
+    assert 'id="review-interests-retry" hidden' in rendered
+    assert 'aria-describedby="review-interests-status"' in rendered
